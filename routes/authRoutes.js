@@ -1,7 +1,9 @@
+// routes/authRoutes.js
 const express = require('express');
 const router = express.Router();
 const authController = require('../controllers/authController');
 const userController = require('../controllers/userController');
+const ActivityLogger = require('../services/activityLogger');
 const { protect, authorize } = require('../middleware/auth');
 
 // Public routes
@@ -23,5 +25,19 @@ router.post('/register', protect, authorize('admin'), authController.register);
 // User management routes
 router.get('/users', protect, authorize('admin'), userController.getUsers);
 router.get('/leaderboard', protect, userController.getLeaderboard);
+
+// Auth test route
+router.get('/test', protect, (req, res) => {
+  res.json({
+    success: true,
+    message: 'Auth test successful',
+    user: {
+      id: req.user._id,
+      username: req.user.username,
+      role: req.user.role
+    },
+    timestamp: new Date().toISOString()
+  });
+});
 
 module.exports = router;

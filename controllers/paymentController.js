@@ -1,3 +1,4 @@
+//controllers/paymentController.js
 const cron = require("node-cron");
 const Transaction = require("../models/Transaction");
 const Customer = require("../models/Customer");
@@ -9,6 +10,7 @@ const {
 const WhatsAppService = require("../services/whatsappService");
 const PerformanceTracker = require("../middleware/performanceTracker");
 const User = require("../models/User");
+const ActivityLogger = require("../services/activityLogger");
 
 console.log("🔧 Loading payment controller...");
 
@@ -18,9 +20,12 @@ console.log("🔧 Loading payment controller...");
  * @access  Private (All authenticated users)
  */
 exports.initiateSTKPush = async (req, res) => {
+  const startTime = Date.now();
+  const user = req.user;
+  
   console.log("\n=== INITIATE PAYMENT REQUEST ===");
   console.log("Request body:", req.body);
-  console.log("User:", req.user?.username);
+  console.log("User:", user?.username);
 
   const session = await Transaction.startSession();
   session.startTransaction();
@@ -91,6 +96,20 @@ exports.initiateSTKPush = async (req, res) => {
       console.log("❌ Customer not found");
       await session.abortTransaction();
       session.endSession();
+      
+      // Log failed transaction initiation
+      await ActivityLogger.logError(
+        user.id,
+        'TRANSACTION_INITIATE',
+        `Failed to initiate payment - Customer not found`,
+        { code: 'CUSTOMER_NOT_FOUND' },
+        {
+          phoneNumber: formattedPhone,
+          amount: amountNum,
+          customerId
+        }
+      );
+      
       return res.status(404).json({
         success: false,
         message: "Customer not found. Please register customer first.",
@@ -104,6 +123,19 @@ exports.initiateSTKPush = async (req, res) => {
       console.log("❌ Amount exceeds loan balance");
       await session.abortTransaction();
       session.endSession();
+      
+      await ActivityLogger.logError(
+        user.id,
+        'TRANSACTION_INITIATE',
+        `Payment amount exceeds loan balance`,
+        { code: 'AMOUNT_EXCEEDS_BALANCE' },
+        {
+          customerName: customer.name,
+          amount: amountNum,
+          loanBalance: customer.loanBalance
+        }
+      );
+      
       return res.status(400).json({
         success: false,
         message: `Payment amount (Ksh ${amountNum.toLocaleString()}) exceeds loan balance (Ksh ${customer.loanBalance.toLocaleString()})`,
@@ -147,8 +179,8 @@ exports.initiateSTKPush = async (req, res) => {
       arrearsBefore: customer.arrears,
       arrearsAfter: newArrears,
       paymentMethod: "WHATSAPP",
-      initiatedBy: req.user.username,
-      initiatedByUserId: req.user.id,
+      initiatedBy: user.username,
+      initiatedByUserId: user.id,
       whatsappRequest: {
         message: "WhatsApp payment request sent",
         timestamp: new Date(),
@@ -160,7 +192,7 @@ exports.initiateSTKPush = async (req, res) => {
       session,
     });
 
-    await PerformanceTracker.trackTransaction(req.user.id, transaction);
+    await PerformanceTracker.trackTransaction(user.id, transaction);
 
     await session.commitTransaction();
     session.endSession();
@@ -216,6 +248,21 @@ exports.initiateSTKPush = async (req, res) => {
     }
 
     console.log("✅ Sending response to frontend");
+    
+    // Log successful transaction initiation
+    await ActivityLogger.logTransaction(
+      user.id,
+      'TRANSACTION_INITIATE',
+      transaction[0],
+      {
+        customerName: customer.name,
+        amount: amountNum,
+        paymentMethod: 'WHATSAPP',
+        whatsappSuccess: whatsappResponse.success,
+        duration: Date.now() - startTime
+      }
+    );
+
     res.json({
       success: true,
       message: whatsappResponse.mock
@@ -246,12 +293,33 @@ exports.initiateSTKPush = async (req, res) => {
 
     if (error.code === 11000 && error.keyPattern?.transactionId) {
       console.log("Duplicate transaction ID");
+      
+      await ActivityLogger.logError(
+        user.id,
+        'TRANSACTION_INITIATE',
+        'Duplicate transaction ID',
+        error,
+        { transactionId: req.body.transactionId }
+      );
+      
       return res.status(409).json({
         success: false,
         message: "Transaction ID conflict. Please try again.",
       });
     }
 
+    await ActivityLogger.logError(
+      user.id,
+      'TRANSACTION_INITIATE',
+      'Failed to initiate STK push payment',
+      error,
+      {
+        phoneNumber: req.body.phoneNumber,
+        amount: req.body.amount,
+        customerId: req.body.customerId
+      }
+    );
+    
     res.status(500).json({
       success: false,
       message: "Server error: " + error.message,
@@ -442,6 +510,19 @@ exports.processWhatsAppResponse = async (req, res) => {
         })),
       );
 
+      // Log failed webhook processing
+      await ActivityLogger.logError(
+        null,
+        'TRANSACTION_PROCESS',
+        'No pending transaction found for WhatsApp response',
+        { code: 'NO_PENDING_TRANSACTION' },
+        {
+          phoneNumber,
+          messageBody: message,
+          pendingCount: allPending.length
+        }
+      );
+
       // Send message to customer
       const twimlResponse = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
@@ -467,6 +548,20 @@ exports.processWhatsAppResponse = async (req, res) => {
         const customer = await Customer.findById(transaction.customerId);
         if (customer) {
           customerName = customer.name;
+          
+          // Log successful transaction via webhook
+          await ActivityLogger.logTransaction(
+            transaction.initiatedByUserId || null,
+            'TRANSACTION_SUCCESS',
+            transaction,
+            {
+              customerName: customer.name,
+              amount: transaction.amount,
+              paymentMethod: 'WHATSAPP',
+              receiptNumber: transaction.mpesaReceiptNumber,
+              processedVia: 'webhook'
+            }
+          );
         }
       } catch (error) {
         console.log("⚠️ Could not fetch customer name:", error.message);
@@ -480,6 +575,21 @@ exports.processWhatsAppResponse = async (req, res) => {
       return res.send(twimlResponse);
     } else {
       console.log("❌ Payment processing failed");
+      
+      // Log failed transaction via webhook
+      await ActivityLogger.logError(
+        transaction.initiatedByUserId || null,
+        'TRANSACTION_FAIL',
+        'WhatsApp payment processing failed',
+        { code: 'WHATSAPP_PAYMENT_FAILED' },
+        {
+          transactionId: transaction.transactionId,
+          phoneNumber,
+          pinAttempts: transaction.pinAttempts,
+          status: transaction.status
+        }
+      );
+      
       // Send failure message
       const twimlResponse = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
@@ -490,6 +600,19 @@ exports.processWhatsAppResponse = async (req, res) => {
   } catch (error) {
     console.error("❌ WhatsApp webhook error:", error);
     console.error("Error stack:", error.stack);
+    
+    // Log webhook error
+    await ActivityLogger.logError(
+      null,
+      'TRANSACTION_PROCESS',
+      'WhatsApp webhook processing error',
+      error,
+      {
+        requestBody: req.body,
+        endpoint: req.originalUrl
+      }
+    );
+    
     // Send error response but don't crash
     const twimlResponse = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
@@ -501,6 +624,8 @@ exports.processWhatsAppResponse = async (req, res) => {
 
 // Helper function to process payment with PIN
 async function processPaymentWithPIN(transaction, pin) {
+  const startTime = Date.now();
+  
   try {
     console.log(
       `\n💰 PROCESSING PAYMENT FOR TRANSACTION: ${transaction.transactionId}`,
@@ -523,6 +648,33 @@ async function processPaymentWithPIN(transaction, pin) {
         transaction.status = "FAILED";
         transaction.errorMessage = "Maximum PIN attempts exceeded";
         transaction.failureReason = "WRONG_PIN";
+        
+        // Log max attempts failure
+        await ActivityLogger.logError(
+          transaction.initiatedByUserId,
+          'TRANSACTION_FAIL',
+          'Maximum PIN attempts exceeded',
+          { code: 'MAX_PIN_ATTEMPTS' },
+          {
+            transactionId: transaction.transactionId,
+            pinAttempts: transaction.pinAttempts,
+            customerId: transaction.customerId
+          }
+        );
+      } else {
+        // Log invalid PIN attempt
+        await ActivityLogger.logError(
+          transaction.initiatedByUserId,
+          'TRANSACTION_PROCESS',
+          `Invalid PIN attempt (${transaction.pinAttempts}/3)`,
+          { code: 'INVALID_PIN' },
+          {
+            transactionId: transaction.transactionId,
+            pinAttempts: transaction.pinAttempts,
+            expectedPin: '1234',
+            receivedPin: pin
+          }
+        );
       }
 
       await transaction.save();
@@ -637,6 +789,20 @@ async function processPaymentWithPIN(transaction, pin) {
       await session.abortTransaction();
       console.error("❌ Transaction error:", error);
       console.error("Error stack:", error.stack);
+      
+      // Log transaction processing error
+      await ActivityLogger.logError(
+        transaction.initiatedByUserId,
+        'TRANSACTION_FAIL',
+        'Database transaction failed during payment processing',
+        error,
+        {
+          transactionId: transaction.transactionId,
+          session: 'active',
+          duration: Date.now() - startTime
+        }
+      );
+      
       throw error;
     } finally {
       session.endSession();
@@ -644,6 +810,20 @@ async function processPaymentWithPIN(transaction, pin) {
   } catch (error) {
     console.error("❌ Error in processPaymentWithPIN:", error);
     console.error("Error stack:", error.stack);
+    
+    await ActivityLogger.logError(
+      transaction.initiatedByUserId,
+      'TRANSACTION_FAIL',
+      'Payment processing failed',
+      error,
+      {
+        transactionId: transaction.transactionId,
+        customerId: transaction.customerId,
+        amount: transaction.amount,
+        duration: Date.now() - startTime
+      }
+    );
+    
     return false;
   }
 }
@@ -656,6 +836,9 @@ async function processPaymentWithPIN(transaction, pin) {
  * @access  Private (All authenticated users)
  */
 exports.manualPinEntry = async (req, res) => {
+  const startTime = Date.now();
+  const user = req.user;
+  
   console.log("\n🔑 MANUAL PIN ENTRY REQUEST");
   console.log("Request body:", req.body);
 
@@ -671,6 +854,19 @@ exports.manualPinEntry = async (req, res) => {
 
     // SPECIAL FIX: Only accept 1234 for demo
     if (pin !== "1234") {
+      // Log invalid PIN attempt
+      await ActivityLogger.logError(
+        user.id,
+        'TRANSACTION_PROCESS',
+        'Manual PIN entry failed - Invalid PIN',
+        { code: 'INVALID_PIN' },
+        {
+          transactionId,
+          expectedPin: '1234',
+          receivedPin: pin
+        }
+      );
+      
       return res.status(400).json({
         success: false,
         message: "❌ For demo purposes, please use PIN: 1234",
@@ -685,6 +881,15 @@ exports.manualPinEntry = async (req, res) => {
 
     if (!transaction) {
       console.log("❌ Transaction not found or not pending:", transactionId);
+      
+      await ActivityLogger.logError(
+        user.id,
+        'TRANSACTION_PROCESS',
+        'Manual PIN entry failed - Transaction not found',
+        { code: 'TRANSACTION_NOT_FOUND' },
+        { transactionId }
+      );
+      
       return res.status(404).json({
         success: false,
         message: "Pending transaction not found",
@@ -702,6 +907,20 @@ exports.manualPinEntry = async (req, res) => {
       const updatedTransaction = await Transaction.findOne({
         transactionId: transactionId,
       });
+
+      // Log successful manual PIN entry
+      await ActivityLogger.logTransaction(
+        user.id,
+        'TRANSACTION_SUCCESS',
+        updatedTransaction,
+        {
+          method: 'manual_pin',
+          customerId: updatedTransaction.customerId,
+          amount: updatedTransaction.amount,
+          receiptNumber: updatedTransaction.mpesaReceiptNumber,
+          duration: Date.now() - startTime
+        }
+      );
 
       res.json({
         success: true,
@@ -721,6 +940,19 @@ exports.manualPinEntry = async (req, res) => {
         transactionId: transactionId,
       });
 
+      // Log failed manual PIN entry
+      await ActivityLogger.logError(
+        user.id,
+        'TRANSACTION_FAIL',
+        'Manual PIN entry processing failed',
+        { code: 'MANUAL_PIN_FAILED' },
+        {
+          transactionId,
+          status: updatedTransaction?.status,
+          errorMessage: updatedTransaction?.errorMessage
+        }
+      );
+
       res.status(400).json({
         success: false,
         message: "❌ Payment failed",
@@ -733,6 +965,18 @@ exports.manualPinEntry = async (req, res) => {
     }
   } catch (error) {
     console.error("❌ Manual PIN endpoint error:", error);
+    
+    await ActivityLogger.logError(
+      user.id,
+      'TRANSACTION_PROCESS',
+      'Manual PIN entry endpoint error',
+      error,
+      {
+        transactionId: req.body.transactionId,
+        endpoint: req.originalUrl
+      }
+    );
+    
     res.status(500).json({
       success: false,
       message: "Server error: " + error.message,
@@ -746,6 +990,9 @@ exports.manualPinEntry = async (req, res) => {
  * @access  Private (All authenticated users)
  */
 exports.processPin = async (req, res) => {
+  const startTime = Date.now();
+  const user = req.user;
+  
   const session = await Transaction.startSession();
   session.startTransaction();
 
@@ -771,6 +1018,15 @@ exports.processPin = async (req, res) => {
     if (!transaction) {
       await session.abortTransaction();
       session.endSession();
+      
+      await ActivityLogger.logError(
+        user.id,
+        'TRANSACTION_PROCESS',
+        'Transaction not found for PIN processing',
+        { code: 'TRANSACTION_NOT_FOUND' },
+        { transactionId }
+      );
+      
       return res.status(404).json({
         success: false,
         message: "Transaction not found",
@@ -781,6 +1037,18 @@ exports.processPin = async (req, res) => {
     if (transaction.status !== "PENDING") {
       await session.abortTransaction();
       session.endSession();
+      
+      await ActivityLogger.logError(
+        user.id,
+        'TRANSACTION_PROCESS',
+        `Transaction already ${transaction.status}`,
+        { code: 'ALREADY_PROCESSED' },
+        {
+          transactionId,
+          currentStatus: transaction.status
+        }
+      );
+      
       return res.status(400).json({
         success: false,
         message: `Transaction already ${transaction.status.toLowerCase()}`,
@@ -796,6 +1064,17 @@ exports.processPin = async (req, res) => {
 
       await session.commitTransaction();
       session.endSession();
+
+      await ActivityLogger.logError(
+        user.id,
+        'TRANSACTION_FAIL',
+        'Maximum PIN attempts exceeded',
+        { code: 'MAX_PIN_ATTEMPTS' },
+        {
+          transactionId,
+          pinAttempts: transaction.pinAttempts
+        }
+      );
 
       return res.status(400).json({
         success: false,
@@ -834,7 +1113,7 @@ exports.processPin = async (req, res) => {
         mpesaReceiptNumber = `RC${Date.now().toString().slice(-10)}`;
       }
 
-      await PerformanceTracker.trackTransaction(req.user.id, transaction);
+      await PerformanceTracker.trackTransaction(user.id, transaction);
 
       // Update transaction
       transaction.status = "SUCCESS";
@@ -856,6 +1135,19 @@ exports.processPin = async (req, res) => {
 
       await session.commitTransaction();
       session.endSession();
+
+      // Log successful transaction
+      await ActivityLogger.logTransaction(
+        user.id,
+        'TRANSACTION_SUCCESS',
+        transaction,
+        {
+          customerName: customer.name,
+          amount: transaction.amount,
+          receiptNumber: mpesaReceiptNumber,
+          duration: Date.now() - startTime
+        }
+      );
 
       // Response
       res.json({
@@ -879,6 +1171,28 @@ exports.processPin = async (req, res) => {
       if (transaction.pinAttempts >= 3) {
         transaction.status = "FAILED";
         transaction.errorMessage = "Maximum PIN attempts exceeded";
+        
+        await ActivityLogger.logError(
+          user.id,
+          'TRANSACTION_FAIL',
+          'Maximum PIN attempts reached',
+          { code: 'MAX_PIN_ATTEMPTS' },
+          {
+            transactionId,
+            pinAttempts: transaction.pinAttempts
+          }
+        );
+      } else {
+        await ActivityLogger.logError(
+          user.id,
+          'TRANSACTION_PROCESS',
+          `Invalid PIN attempt (${transaction.pinAttempts}/3)`,
+          { code: 'INVALID_PIN' },
+          {
+            transactionId,
+            pinAttempts: transaction.pinAttempts
+          }
+        );
       }
 
       await transaction.save({ session });
@@ -900,6 +1214,18 @@ exports.processPin = async (req, res) => {
     session.endSession();
 
     console.error("Process PIN error:", error);
+    
+    await ActivityLogger.logError(
+      user.id,
+      'TRANSACTION_PROCESS',
+      'Failed to process PIN',
+      error,
+      {
+        transactionId: req.body.transactionId,
+        endpoint: req.originalUrl
+      }
+    );
+    
     res.status(500).json({
       success: false,
       message: "Server error processing payment",
@@ -913,56 +1239,57 @@ exports.processPin = async (req, res) => {
  * @access  Private (All authenticated users)
  */
 exports.getTransactions = async (req, res) => {
+  const startTime = Date.now();
+  
   try {
     const user = req.user;
     const { limit = 50, status, customerId } = req.query;
-    
-    console.log(`📊 Get transactions request from: ${user.username} (${user.role})`);
-    
+
+    console.log(
+      `📊 Get transactions request from: ${user.username} (${user.role})`,
+    );
+
     let query = {};
-    
+
     // Status filter
-    if (status && status !== 'all') {
+    if (status && status !== "all") {
       query.status = status;
     }
-    
+
     // Customer filter
     if (customerId) {
       const customer = await Customer.findOne({
-        $or: [
-          { _id: customerId },
-          { customerId: customerId }
-        ]
+        $or: [{ _id: customerId }, { customerId: customerId }],
       });
       if (customer) {
         query.customerId = customer._id;
       }
     }
-    
+
     // Role-based filtering
-    if (user.role === 'officer') {
+    if (user.role === "officer") {
       // Officers see only their own transactions
       query.initiatedByUserId = user._id;
-    } else if (user.role === 'supervisor') {
+    } else if (user.role === "supervisor") {
       // Supervisors see their team's transactions
-      const teamMembers = await User.find({ 
-        role: 'officer',
-        isActive: true 
-      }).select('_id');
-      
-      const teamMemberIds = teamMembers.map(member => member._id);
+      const teamMembers = await User.find({
+        role: "officer",
+        isActive: true,
+      }).select("_id");
+
+      const teamMemberIds = teamMembers.map((member) => member._id);
       query.initiatedByUserId = { $in: teamMemberIds };
     }
     // Admins see all transactions (no filter)
-    
+
     const transactions = await Transaction.find(query)
-      .populate('customerId', 'name phoneNumber customerId')
-      .populate('initiatedByUserId', 'username fullName role')
+      .populate("customerId", "name phoneNumber customerId")
+      .populate("initiatedByUserId", "username fullName role")
       .sort({ createdAt: -1 })
       .limit(parseInt(limit));
-    
+
     // Format response
-    const formattedTransactions = transactions.map(transaction => ({
+    const formattedTransactions = transactions.map((transaction) => ({
       id: transaction._id,
       transactionId: transaction.transactionId,
       amount: transaction.amount,
@@ -973,35 +1300,64 @@ exports.getTransactions = async (req, res) => {
         id: transaction.customerId?._id,
         name: transaction.customerId?.name,
         phone: transaction.customerId?.phoneNumber,
-        customerId: transaction.customerId?.customerId
+        customerId: transaction.customerId?.customerId,
       },
-      initiatedBy: transaction.initiatedByUserId ? {
-        id: transaction.initiatedByUserId._id,
-        name: transaction.initiatedByUserId.fullName || transaction.initiatedByUserId.username,
-        role: transaction.initiatedByUserId.role
-      } : null,
+      initiatedBy: transaction.initiatedByUserId
+        ? {
+            id: transaction.initiatedByUserId._id,
+            name:
+              transaction.initiatedByUserId.fullName ||
+              transaction.initiatedByUserId.username,
+            role: transaction.initiatedByUserId.role,
+          }
+        : null,
       createdAt: transaction.createdAt,
       updatedAt: transaction.updatedAt,
-      mpesaReceiptNumber: transaction.mpesaReceiptNumber
+      mpesaReceiptNumber: transaction.mpesaReceiptNumber,
     }));
-    
+
+    // Log transaction list view
+    await ActivityLogger.log({
+      userId: user.id,
+      action: 'TRANSACTION_VIEW',
+      description: `Viewed transaction list (${transactions.length} transactions)`,
+      resourceType: 'SYSTEM',
+      requestDetails: {
+        filters: { status, customerId, limit },
+        userRole: user.role,
+        duration: Date.now() - startTime
+      },
+      tags: ['transaction', 'list', 'view']
+    });
+
     res.json({
       success: true,
-      message: 'Transactions retrieved successfully',
+      message: "Transactions retrieved successfully",
       data: {
         transactions: formattedTransactions,
         count: formattedTransactions.length,
         userRole: user.role,
-        timestamp: new Date()
-      }
+        timestamp: new Date(),
+      },
     });
-    
   } catch (error) {
-    console.error('Get transactions error:', error);
+    console.error("Get transactions error:", error);
+    
+    await ActivityLogger.logError(
+      req.user.id,
+      'TRANSACTION_VIEW',
+      'Failed to fetch transactions',
+      error,
+      {
+        endpoint: req.originalUrl,
+        query: req.query
+      }
+    );
+    
     res.status(500).json({
       success: false,
-      message: 'Error fetching transactions',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+      message: "Error fetching transactions",
+      error: process.env.NODE_ENV === "development" ? error.message : undefined,
     });
   }
 };
@@ -1012,38 +1368,42 @@ exports.getTransactions = async (req, res) => {
  * @access  Private (All authenticated users)
  */
 exports.getRecentTransactions = async (req, res) => {
+  const startTime = Date.now();
+  
   try {
     const user = req.user;
     const { limit = 20 } = req.query;
-    
-    console.log(`📊 Recent transactions request from: ${user.username} (${user.role})`);
-    
-    let query = { status: 'SUCCESS' };
-    
+
+    console.log(
+      `📊 Recent transactions request from: ${user.username} (${user.role})`,
+    );
+
+    let query = { status: "SUCCESS" };
+
     // Role-based filtering
-    if (user.role === 'officer') {
+    if (user.role === "officer") {
       // Officers see only their own transactions
       query.initiatedByUserId = user._id;
-    } else if (user.role === 'supervisor') {
+    } else if (user.role === "supervisor") {
       // Supervisors see their team's transactions
-      const teamMembers = await User.find({ 
-        role: 'officer',
-        isActive: true 
-      }).select('_id');
-      
-      const teamMemberIds = teamMembers.map(member => member._id);
+      const teamMembers = await User.find({
+        role: "officer",
+        isActive: true,
+      }).select("_id");
+
+      const teamMemberIds = teamMembers.map((member) => member._id);
       query.initiatedByUserId = { $in: teamMemberIds };
     }
     // Admins see all transactions (no filter)
-    
+
     const transactions = await Transaction.find(query)
-      .populate('customerId', 'name phoneNumber customerId')
-      .populate('initiatedByUserId', 'username fullName role')
+      .populate("customerId", "name phoneNumber customerId")
+      .populate("initiatedByUserId", "username fullName role")
       .sort({ createdAt: -1 })
       .limit(parseInt(limit));
-    
+
     // Format response
-    const formattedTransactions = transactions.map(transaction => ({
+    const formattedTransactions = transactions.map((transaction) => ({
       id: transaction._id,
       transactionId: transaction.transactionId,
       amount: transaction.amount,
@@ -1054,34 +1414,60 @@ exports.getRecentTransactions = async (req, res) => {
         id: transaction.customerId?._id,
         name: transaction.customerId?.name,
         phone: transaction.customerId?.phoneNumber,
-        customerId: transaction.customerId?.customerId
+        customerId: transaction.customerId?.customerId,
       },
-      initiatedBy: transaction.initiatedByUserId ? {
-        id: transaction.initiatedByUserId._id,
-        name: transaction.initiatedByUserId.fullName || transaction.initiatedByUserId.username,
-        role: transaction.initiatedByUserId.role
-      } : null,
+      initiatedBy: transaction.initiatedByUserId
+        ? {
+            id: transaction.initiatedByUserId._id,
+            name:
+              transaction.initiatedByUserId.fullName ||
+              transaction.initiatedByUserId.username,
+            role: transaction.initiatedByUserId.role,
+          }
+        : null,
       createdAt: transaction.createdAt,
-      updatedAt: transaction.updatedAt
+      updatedAt: transaction.updatedAt,
     }));
-    
+
+    // Log recent transactions view
+    await ActivityLogger.log({
+      userId: user.id,
+      action: 'TRANSACTION_VIEW',
+      description: `Viewed recent transactions (${transactions.length} transactions)`,
+      resourceType: 'SYSTEM',
+      requestDetails: {
+        limit,
+        userRole: user.role,
+        duration: Date.now() - startTime
+      },
+      tags: ['transaction', 'recent', 'dashboard']
+    });
+
     res.json({
       success: true,
-      message: 'Recent transactions retrieved successfully',
+      message: "Recent transactions retrieved successfully",
       data: {
         transactions: formattedTransactions,
         count: formattedTransactions.length,
         userRole: user.role,
-        timestamp: new Date()
-      }
+        timestamp: new Date(),
+      },
     });
-    
   } catch (error) {
-    console.error('Get recent transactions error:', error);
+    console.error("Get recent transactions error:", error);
+    
+    await ActivityLogger.logError(
+      req.user.id,
+      'TRANSACTION_VIEW',
+      'Failed to fetch recent transactions',
+      error,
+      { endpoint: req.originalUrl, limit: req.query.limit }
+    );
+    
     res.status(500).json({
       success: false,
-      message: 'Error fetching recent transactions',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+      message: "Error fetching recent transactions",
+      error: process.env.NODE_ENV === "development" ? error.message : undefined,
     });
   }
 };
@@ -1092,6 +1478,8 @@ exports.getRecentTransactions = async (req, res) => {
  * @access  Private (All authenticated users)
  */
 exports.getTransactionStatus = async (req, res) => {
+  const startTime = Date.now();
+  
   try {
     const transaction = await Transaction.findOne({
       transactionId: req.params.transactionId,
@@ -1101,28 +1489,68 @@ exports.getTransactionStatus = async (req, res) => {
       .select("-__v");
 
     if (!transaction) {
+      // Log transaction status check failure
+      await ActivityLogger.logError(
+        req.user.id,
+        'TRANSACTION_VIEW',
+        'Transaction not found for status check',
+        { code: 'TRANSACTION_NOT_FOUND' },
+        { transactionId: req.params.transactionId }
+      );
+      
       return res.status(404).json({
         success: false,
         message: "Transaction not found",
       });
     }
 
+    // Log transaction status view
+    await ActivityLogger.log({
+      userId: req.user.id,
+      action: 'TRANSACTION_VIEW',
+      description: `Checked transaction status: ${transaction.transactionId} (${transaction.status})`,
+      resourceType: 'TRANSACTION',
+      resourceId: transaction._id,
+      requestDetails: {
+        transactionId: transaction.transactionId,
+        status: transaction.status,
+        duration: Date.now() - startTime
+      },
+      tags: ['transaction', 'status', 'check']
+    });
+
     res.json({
       success: true,
       message: "Transaction status retrieved",
-      data: { 
+      data: {
         transaction: {
           ...transaction.toObject(),
-          initiatedBy: transaction.initiatedByUserId ? {
-            id: transaction.initiatedByUserId._id,
-            name: transaction.initiatedByUserId.fullName || transaction.initiatedByUserId.username,
-            role: transaction.initiatedByUserId.role
-          } : null
-        }
+          initiatedBy: transaction.initiatedByUserId
+            ? {
+                id: transaction.initiatedByUserId._id,
+                name:
+                  transaction.initiatedByUserId.fullName ||
+                  transaction.initiatedByUserId.username,
+                role: transaction.initiatedByUserId.role,
+              }
+            : null,
+        },
       },
     });
   } catch (error) {
     console.error("Get transaction status error:", error);
+    
+    await ActivityLogger.logError(
+      req.user.id,
+      'TRANSACTION_VIEW',
+      'Failed to fetch transaction status',
+      error,
+      {
+        transactionId: req.params.transactionId,
+        endpoint: req.originalUrl
+      }
+    );
+    
     res.status(500).json({
       success: false,
       message: "Server error fetching transaction status",
@@ -1136,6 +1564,8 @@ exports.getTransactionStatus = async (req, res) => {
  * @access  Private (System)
  */
 exports.checkExpiredTransactions = async () => {
+  const startTime = Date.now();
+  
   try {
     const thirtySecondsAgo = new Date(Date.now() - 30000); // 30 seconds
 
@@ -1154,10 +1584,38 @@ exports.checkExpiredTransactions = async () => {
           "Payment request expired (30 seconds) - Customer did not respond";
         transaction.updatedAt = new Date();
         await transaction.save();
+        
+        // Log expired transaction
+        await ActivityLogger.logTransaction(
+          transaction.initiatedByUserId,
+          'TRANSACTION_EXPIRE',
+          transaction,
+          {
+            reason: '30 second timeout',
+            expiredAt: new Date(),
+            durationPending: Date.now() - transaction.createdAt.getTime()
+          }
+        );
       }
+      
+      console.log(`✅ Expired ${expiredTransactions.length} transactions`);
     }
+    
+    console.log(`⏱️ Expiry check completed in ${Date.now() - startTime}ms`);
   } catch (error) {
     console.error("Error checking expired transactions:", error);
+    
+    // Log cron job error
+    await ActivityLogger.logError(
+      null,
+      'SYSTEM_ERROR',
+      'Failed to check expired transactions',
+      error,
+      {
+        job: 'checkExpiredTransactions',
+        duration: Date.now() - startTime
+      }
+    );
   }
 };
 
@@ -1167,6 +1625,8 @@ exports.checkExpiredTransactions = async () => {
  * @access Private (Admin, Supervisor)
  */
 exports.getPerformanceStats = async (req, res) => {
+  const startTime = Date.now();
+  
   try {
     const { timeframe = "weekly" } = req.query;
 
@@ -1179,6 +1639,21 @@ exports.getPerformanceStats = async (req, res) => {
 
     // Calculate rank
     const rank = await PerformanceTracker.calculateRank(req.user.id, timeframe);
+
+    // Log performance metrics view
+    await ActivityLogger.log({
+      userId: req.user.id,
+      action: 'SYSTEM_VIEW',
+      description: `Viewed performance metrics (${timeframe})`,
+      resourceType: 'SYSTEM',
+      requestDetails: {
+        timeframe,
+        rank,
+        leaderboardCount: leaderboard.length,
+        duration: Date.now() - startTime
+      },
+      tags: ['performance', 'metrics', 'leaderboard']
+    });
 
     res.json({
       success: true,
@@ -1196,6 +1671,15 @@ exports.getPerformanceStats = async (req, res) => {
     });
   } catch (error) {
     console.error("Error getting performance stats:", error);
+    
+    await ActivityLogger.logError(
+      req.user.id,
+      'SYSTEM_ERROR',
+      'Failed to fetch performance stats',
+      error,
+      { endpoint: req.originalUrl, timeframe: req.query.timeframe }
+    );
+    
     res.status(500).json({
       success: false,
       message: "Error fetching performance stats",
@@ -1239,6 +1723,9 @@ function getFailureMessage(failureReason) {
  * @access  Private (Admin, Supervisor)
  */
 exports.markTransactionFailed = async (req, res) => {
+  const startTime = Date.now();
+  const user = req.user;
+  
   try {
     const { failureReason } = req.body;
 
@@ -1261,11 +1748,28 @@ exports.markTransactionFailed = async (req, res) => {
       });
     }
 
+    // Store old status for logging
+    const oldStatus = transaction.status;
+    
     transaction.status = "FAILED";
     transaction.failureReason = failureReason;
     transaction.errorMessage = getFailureMessage(failureReason);
     transaction.updatedAt = new Date();
     await transaction.save();
+
+    // Log manual transaction failure
+    await ActivityLogger.logTransaction(
+      user.id,
+      'TRANSACTION_CANCEL',
+      transaction,
+      {
+        oldStatus,
+        newStatus: 'FAILED',
+        failureReason,
+        markedBy: user.username,
+        duration: Date.now() - startTime
+      }
+    );
 
     res.json({
       success: true,
@@ -1274,6 +1778,18 @@ exports.markTransactionFailed = async (req, res) => {
     });
   } catch (error) {
     console.error("Mark transaction failed error:", error);
+    
+    await ActivityLogger.logError(
+      user.id,
+      'TRANSACTION_CANCEL',
+      'Failed to mark transaction as failed',
+      error,
+      {
+        transactionId: req.params.transactionId,
+        failureReason: req.body.failureReason
+      }
+    );
+    
     res.status(500).json({
       success: false,
       message: "Server error marking transaction as failed",
@@ -1287,6 +1803,9 @@ exports.markTransactionFailed = async (req, res) => {
  * @access  Private (Admin, Supervisor)
  */
 exports.cancelTransaction = async (req, res) => {
+  const startTime = Date.now();
+  const user = req.user;
+  
   try {
     const transaction = await Transaction.findOne({
       transactionId: req.params.transactionId,
@@ -1300,10 +1819,26 @@ exports.cancelTransaction = async (req, res) => {
       });
     }
 
+    // Store old status for logging
+    const oldStatus = transaction.status;
+    
     transaction.status = "CANCELLED";
     transaction.updatedAt = new Date();
     transaction.errorMessage = "Cancelled by administrator";
     await transaction.save();
+
+    // Log transaction cancellation
+    await ActivityLogger.logTransaction(
+      user.id,
+      'TRANSACTION_CANCEL',
+      transaction,
+      {
+        oldStatus,
+        newStatus: 'CANCELLED',
+        cancelledBy: user.username,
+        duration: Date.now() - startTime
+      }
+    );
 
     res.json({
       success: true,
@@ -1312,6 +1847,15 @@ exports.cancelTransaction = async (req, res) => {
     });
   } catch (error) {
     console.error("Cancel transaction error:", error);
+    
+    await ActivityLogger.logError(
+      user.id,
+      'TRANSACTION_CANCEL',
+      'Failed to cancel transaction',
+      error,
+      { transactionId: req.params.transactionId }
+    );
+    
     res.status(500).json({
       success: false,
       message: "Server error cancelling transaction",
@@ -1326,6 +1870,17 @@ exports.cancelTransaction = async (req, res) => {
  */
 exports.testEndpoint = async (req, res) => {
   console.log("Test endpoint called");
+  
+  // Log test endpoint access
+  await ActivityLogger.log({
+    userId: req.user?.id || null,
+    action: 'SYSTEM_TEST',
+    description: 'Accessed payment test endpoint',
+    resourceType: 'SYSTEM',
+    ipAddress: req.ip,
+    tags: ['test', 'health-check']
+  });
+  
   res.json({
     success: true,
     message: "Payment API is working",
@@ -1341,6 +1896,8 @@ exports.testEndpoint = async (req, res) => {
  * @access  Private (Admin, Supervisor)
  */
 exports.getDashboardStats = async (req, res) => {
+  const startTime = Date.now();
+  
   try {
     // Get today's date
     const today = new Date();
@@ -1386,6 +1943,25 @@ exports.getDashboardStats = async (req, res) => {
         ? ((successfulTransactions / totalTransactions) * 100).toFixed(2)
         : 0;
 
+    // Log dashboard stats view
+    await ActivityLogger.log({
+      userId: req.user.id,
+      action: 'SYSTEM_VIEW',
+      description: 'Viewed payment dashboard statistics',
+      resourceType: 'SYSTEM',
+      requestDetails: {
+        stats: {
+          totalTransactions,
+          successfulTransactions,
+          totalAmount: totalAmountValue,
+          todayAmount: todayAmountValue,
+          successRate: parseFloat(successRate)
+        },
+        duration: Date.now() - startTime
+      },
+      tags: ['dashboard', 'statistics', 'payments']
+    });
+
     res.json({
       success: true,
       data: {
@@ -1401,6 +1977,15 @@ exports.getDashboardStats = async (req, res) => {
     });
   } catch (error) {
     console.error("Get dashboard stats error:", error);
+    
+    await ActivityLogger.logError(
+      req.user.id,
+      'SYSTEM_ERROR',
+      'Failed to fetch payment dashboard statistics',
+      error,
+      { endpoint: req.originalUrl }
+    );
+    
     res.status(500).json({
       success: false,
       message: "Server error fetching dashboard statistics",
@@ -1414,6 +1999,8 @@ exports.getDashboardStats = async (req, res) => {
  * @access  Private (All authenticated users)
  */
 exports.getTransactionById = async (req, res) => {
+  const startTime = Date.now();
+  
   try {
     const transaction = await Transaction.findById(req.params.id)
       .populate("customerId", "name phoneNumber customerId")
@@ -1427,21 +2014,53 @@ exports.getTransactionById = async (req, res) => {
       });
     }
 
+    // Log transaction view by ID
+    await ActivityLogger.log({
+      userId: req.user.id,
+      action: 'TRANSACTION_VIEW',
+      description: `Viewed transaction details: ${transaction.transactionId}`,
+      resourceType: 'TRANSACTION',
+      resourceId: transaction._id,
+      requestDetails: {
+        transactionId: transaction.transactionId,
+        status: transaction.status,
+        amount: transaction.amount,
+        duration: Date.now() - startTime
+      },
+      tags: ['transaction', 'details', 'view']
+    });
+
     res.json({
       success: true,
-      data: { 
+      data: {
         transaction: {
           ...transaction.toObject(),
-          initiatedBy: transaction.initiatedByUserId ? {
-            id: transaction.initiatedByUserId._id,
-            name: transaction.initiatedByUserId.fullName || transaction.initiatedByUserId.username,
-            role: transaction.initiatedByUserId.role
-          } : null
-        }
+          initiatedBy: transaction.initiatedByUserId
+            ? {
+                id: transaction.initiatedByUserId._id,
+                name:
+                  transaction.initiatedByUserId.fullName ||
+                  transaction.initiatedByUserId.username,
+                role: transaction.initiatedByUserId.role,
+              }
+            : null,
+        },
       },
     });
   } catch (error) {
     console.error("Get transaction by ID error:", error);
+    
+    await ActivityLogger.logError(
+      req.user.id,
+      'TRANSACTION_VIEW',
+      'Failed to fetch transaction by ID',
+      error,
+      {
+        transactionId: req.params.id,
+        endpoint: req.originalUrl
+      }
+    );
+    
     res.status(500).json({
       success: false,
       message: "Server error fetching transaction",
@@ -1455,6 +2074,8 @@ exports.getTransactionById = async (req, res) => {
  * @access  Private (Admin, Supervisor)
  */
 exports.debugTransactionModel = async (req, res) => {
+  const startTime = Date.now();
+  
   try {
     // Check if Transaction model has required methods
     const hasGenerateMethod =
@@ -1464,6 +2085,18 @@ exports.debugTransactionModel = async (req, res) => {
     const sampleTransaction = await Transaction.findOne().sort({
       createdAt: -1,
     });
+
+    // Log debug access
+    await ActivityLogger.logSystem(
+      req.user.id,
+      'SYSTEM_DEBUG',
+      'Debugged transaction model',
+      {
+        hasGenerateMethod,
+        sampleTransaction: sampleTransaction ? 'found' : 'not found',
+        duration: Date.now() - startTime
+      }
+    );
 
     res.json({
       success: true,
@@ -1485,9 +2118,252 @@ exports.debugTransactionModel = async (req, res) => {
     });
   } catch (error) {
     console.error("Debug error:", error);
+    
+    await ActivityLogger.logError(
+      req.user.id,
+      'SYSTEM_DEBUG',
+      'Failed to debug transaction model',
+      error,
+      { endpoint: req.originalUrl }
+    );
+    
     res.status(500).json({
       success: false,
       message: "Debug error: " + error.message,
+    });
+  }
+};
+
+/**
+ * @desc    Get transactions for logged-in officer
+ * @route   GET /api/transactions/my-transactions
+ * @access  Private (Officers only)
+ */
+exports.getMyTransactions = async (req, res) => {
+  const startTime = Date.now();
+  
+  try {
+    const userId = req.user.id;
+    const userRole = req.user.role;
+
+    // Get query parameters
+    const {
+      limit = 50,
+      page = 1,
+      status,
+      startDate,
+      endDate,
+      customerId,
+    } = req.query;
+
+    console.log(`💳 Fetching transactions for officer ${userId}`);
+
+    // Build query
+    let query = {};
+
+    if (userRole === "officer") {
+      query = {
+        $or: [
+          { createdBy: userId }, 
+          { officerId: userId }, 
+          { userId: userId },
+          { initiatedByUserId: userId }
+        ],
+      };
+    }
+    // Add filters if provided
+    if (status) query.status = status;
+    if (customerId) query.customerId = customerId;
+    if (startDate || endDate) {
+      query.createdAt = {};
+      if (startDate) query.createdAt.$gte = new Date(startDate);
+      if (endDate) query.createdAt.$lte = new Date(endDate);
+    }
+
+    // Calculate pagination
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+
+    const [transactions, total] = await Promise.all([
+      Transaction.find(query)
+        .populate("customerId", "name phoneNumber loanBalance")
+        .populate("initiatedByUserId", "name username")
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(parseInt(limit))
+        .lean(),
+      Transaction.countDocuments(query),
+    ]);
+
+    // Calculate totals
+    const successfulTransactions = transactions.filter(
+      (t) => t.status === "SUCCESS"
+    );
+
+    const totalAmount = successfulTransactions.reduce(
+      (sum, trans) => sum + parseFloat(trans.amount || 0),
+      0
+    );
+
+    // Log officer's transaction view
+    await ActivityLogger.log({
+      userId: req.user.id,
+      action: 'TRANSACTION_VIEW',
+      description: `Officer viewed personal transactions (${transactions.length} of ${total})`,
+      resourceType: 'SYSTEM',
+      requestDetails: {
+        page,
+        limit,
+        filters: { status, startDate, endDate, customerId },
+        summary: {
+          total,
+          successful: successfulTransactions.length,
+          totalAmount
+        },
+        duration: Date.now() - startTime
+      },
+      tags: ['transaction', 'officer', 'personal']
+    });
+
+    res.status(200).json({
+      success: true,
+      count: transactions.length,
+      total,
+      totalPages: Math.ceil(total / limit),
+      currentPage: parseInt(page),
+      data: {
+        transactions,
+        summary: {
+          totalTransactions: total,
+          successfulCount: successfulTransactions.length,
+          totalAmount,
+          pendingCount: transactions.filter((t) => t.status === "PENDING")
+            .length,
+          failedCount: transactions.filter((t) => t.status === "FAILED").length,
+        },
+      },
+    });
+  } catch (error) {
+    console.error("❌ Error in getMyTransactions:", error);
+    
+    await ActivityLogger.logError(
+      req.user.id,
+      'TRANSACTION_VIEW',
+      'Failed to fetch officer transactions',
+      error,
+      {
+        endpoint: req.originalUrl,
+        userId: req.user.id
+      }
+    );
+    
+    res.status(500).json({
+      success: false,
+      message: "Server error fetching transactions",
+    });
+  }
+};
+
+/**
+ * @desc    Get officer's collections summary
+ * @route   GET /api/transactions/my-collections
+ * @access  Private (Officers only)
+ */
+exports.getMyCollections = async (req, res) => {
+  const startTime = Date.now();
+  
+  try {
+    const userId = req.user.id;
+
+    console.log(`💰 Fetching collections for officer ${userId}`);
+
+    // Get all successful transactions by this officer
+    const transactions = await Transaction.find({
+      $or: [
+        { createdBy: userId }, 
+        { officerId: userId }, 
+        { userId: userId },
+        { initiatedByUserId: userId }
+      ],
+      status: "SUCCESS",
+    })
+      .populate("customerId", "name phoneNumber")
+      .sort({ createdAt: -1 })
+      .lean();
+
+    // Calculate daily, weekly, monthly totals
+    const now = new Date();
+    const oneDayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    const oneWeekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+    const oneMonthAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+
+    const todayCollections = transactions
+      .filter((t) => new Date(t.createdAt) >= oneDayAgo)
+      .reduce((sum, t) => sum + parseFloat(t.amount || 0), 0);
+
+    const weekCollections = transactions
+      .filter((t) => new Date(t.createdAt) >= oneWeekAgo)
+      .reduce((sum, t) => sum + parseFloat(t.amount || 0), 0);
+
+    const monthCollections = transactions
+      .filter((t) => new Date(t.createdAt) >= oneMonthAgo)
+      .reduce((sum, t) => sum + parseFloat(t.amount || 0), 0);
+
+    const allTimeCollections = transactions.reduce(
+      (sum, t) => sum + parseFloat(t.amount || 0),
+      0
+    );
+
+    // Log collections summary view
+    await ActivityLogger.log({
+      userId: req.user.id,
+      action: 'SYSTEM_VIEW',
+      description: `Officer viewed collections summary`,
+      resourceType: 'SYSTEM',
+      requestDetails: {
+        collections: {
+          today: todayCollections,
+          week: weekCollections,
+          month: monthCollections,
+          allTime: allTimeCollections,
+          transactionCount: transactions.length
+        },
+        duration: Date.now() - startTime
+      },
+      tags: ['collections', 'summary', 'officer']
+    });
+
+    res.status(200).json({
+      success: true,
+      data: {
+        transactions: transactions.slice(0, 20), // Last 20 transactions
+        summary: {
+          today: todayCollections,
+          thisWeek: weekCollections,
+          thisMonth: monthCollections,
+          allTime: allTimeCollections,
+          transactionCount: transactions.length,
+          averageAmount:
+            transactions.length > 0
+              ? allTimeCollections / transactions.length
+              : 0,
+        },
+        recentActivity: transactions.slice(0, 10), // Last 10 for dashboard
+      },
+    });
+  } catch (error) {
+    console.error("❌ Error in getMyCollections:", error);
+    
+    await ActivityLogger.logError(
+      req.user.id,
+      'SYSTEM_ERROR',
+      'Failed to fetch officer collections',
+      error,
+      { endpoint: req.originalUrl }
+    );
+    
+    res.status(500).json({
+      success: false,
+      message: "Server error fetching collections",
     });
   }
 };
@@ -1497,3 +2373,28 @@ cron.schedule("*/10 * * * * *", () => {
   console.log("Checking for expired transactions...");
   exports.checkExpiredTransactions();
 });
+
+// ============================================
+// EXPORTS - MAKE SURE ALL FUNCTIONS ARE INCLUDED
+// ============================================
+module.exports = {
+  initiateSTKPush: exports.initiateSTKPush,
+  processWhatsAppResponse: exports.processWhatsAppResponse,
+  manualPinEntry: exports.manualPinEntry,
+  processPin: exports.processPin,
+  getTransactions: exports.getTransactions,
+  getRecentTransactions: exports.getRecentTransactions,
+  getTransactionStatus: exports.getTransactionStatus,
+  checkExpiredTransactions: exports.checkExpiredTransactions,
+  getPerformanceStats: exports.getPerformanceStats,
+  markTransactionFailed: exports.markTransactionFailed,
+  cancelTransaction: exports.cancelTransaction,
+  testEndpoint: exports.testEndpoint,
+  getDashboardStats: exports.getDashboardStats,
+  getTransactionById: exports.getTransactionById,
+  debugTransactionModel: exports.debugTransactionModel,
+  // Officer-specific functions
+  getMyTransactions: exports.getMyTransactions,
+  getMyCollections: exports.getMyCollections,
+  checkExpiredTransactions: exports.checkExpiredTransactions,
+};

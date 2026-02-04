@@ -8,7 +8,11 @@
     "dev": "nodemon --ext js --ignore db.json server.js",
     "migrate": "node scripts/migrateData.js",
     "seed": "node seed.js",
-    "test": "node test-backend.js"
+    "test": "node test-backend.js",
+    "verify": "node verification/endToend.js",
+    "verify-schema": "node verification/schema-verify.js",
+    "verify-migration": "node verification/migration-verify.js",
+    "verify-assignment": "node verification/assignment-verify.js"
   },
   "dependencies": {
     "axios": "^1.13.2",

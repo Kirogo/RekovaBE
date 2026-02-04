@@ -95,6 +95,38 @@ const CustomerSchema = new mongoose.Schema({
     min: 0,
     max: 100
   },
+    loanType: {
+    type: String,
+    enum: ['Digital Loans', 'Asset Finance', 'Consumer Loans', 'SME', 'Credit Cards'],
+    required: true,
+    default: 'Consumer Loans',
+    index: true  // Important for filtering
+  },
+  
+  // For assignment tracking
+  assignedTo: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    default: null,
+    index: true
+  },
+  
+  // For assignment history tracking
+  assignmentHistory: [{
+    officerId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User'
+    },
+    assignedAt: {
+      type: Date,
+      default: Date.now
+    },
+    assignedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User'
+    },
+    reason: String
+  }],
 }, {
   timestamps: true
 });

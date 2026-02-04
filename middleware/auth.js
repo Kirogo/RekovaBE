@@ -1,3 +1,4 @@
+// middleware/auth.js
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 
@@ -6,72 +7,114 @@ const User = require('../models/User');
  */
 exports.protect = async (req, res, next) => {
   try {
+    // DEBUG LOGGING
+    console.log('=== AUTH MIDDLEWARE DEBUG ===');
+    console.log('Request URL:', req.originalUrl);
+    console.log('Authorization header:', req.headers.authorization);
+    
     let token;
     
     // Check for token in headers
     if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
       token = req.headers.authorization.split(' ')[1];
+      console.log('Token extracted:', token ? `Length: ${token.length}, First 30 chars: ${token.substring(0, 30)}...` : 'NO TOKEN');
+      
+      // Check JWT structure
+      if (token) {
+        const parts = token.split('.');
+        console.log('JWT parts count:', parts.length);
+        if (parts.length !== 3) {
+          console.error('ERROR: JWT malformed - should have 3 parts');
+          return res.status(401).json({
+            success: false,
+            message: 'Malformed token',
+            debug: { parts: parts.length }
+          });
+        }
+      }
+    } else {
+      console.log('No Authorization header or not Bearer token');
     }
     
     if (!token) {
       return res.status(401).json({
         success: false,
-        message: 'Not authorized to access this route'
+        message: 'Not authorized to access this route',
+        debug: 'No token provided'
       });
     }
     
-    // Verify token
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    
-    // Check if user still exists
-    const user = await User.findById(decoded.id).select('-password');
-    if (!user) {
-      return res.status(401).json({
-        success: false,
-        message: 'User not found'
+    // Verify token with more detailed error handling
+    try {
+      console.log('Verifying token with secret...');
+      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      console.log('Token decoded successfully:', { 
+        id: decoded.id, 
+        username: decoded.username, 
+        role: decoded.role 
       });
+      
+      // Check if user still exists
+      const user = await User.findById(decoded.id).select('-password');
+      if (!user) {
+        console.log('User not found in database for id:', decoded.id);
+        return res.status(401).json({
+          success: false,
+          message: 'User not found'
+        });
+      }
+      
+      // Check if user is active
+      if (!user.isActive) {
+        console.log('User account deactivated:', user.username);
+        return res.status(401).json({
+          success: false,
+          message: 'User account is deactivated'
+        });
+      }
+      
+      // Update last login
+      user.lastLogin = new Date();
+      await user.save();
+      
+      // Attach user to request
+      req.user = user;
+      console.log('Auth successful for user:', user.username);
+      next();
+      
+    } catch (verifyError) {
+      console.error('Token verification error:', verifyError.name, verifyError.message);
+      
+      if (verifyError.name === 'JsonWebTokenError') {
+        return res.status(401).json({
+          success: false,
+          message: 'Invalid token',
+          debug: verifyError.message
+        });
+      }
+      
+      if (verifyError.name === 'TokenExpiredError') {
+        return res.status(401).json({
+          success: false,
+          message: 'Token expired'
+        });
+      }
+      
+      throw verifyError; // Re-throw for outer catch
     }
-    
-    // Check if user is active
-    if (!user.isActive) {
-      return res.status(401).json({
-        success: false,
-        message: 'User account is deactivated'
-      });
-    }
-    
-    // Update last login
-    user.lastLogin = new Date();
-    await user.save();
-    
-    // Attach user to request
-    req.user = user;
-    next();
     
   } catch (error) {
     console.error('Auth middleware error:', error);
     
-    if (error.name === 'JsonWebTokenError') {
-      return res.status(401).json({
-        success: false,
-        message: 'Invalid token'
-      });
-    }
-    
-    if (error.name === 'TokenExpiredError') {
-      return res.status(401).json({
-        success: false,
-        message: 'Token expired'
-      });
-    }
-    
     res.status(500).json({
       success: false,
-      message: 'Server error during authentication'
+      message: 'Server error during authentication',
+      debug: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 };
 
+// ... rest of the file remains the same (authorize, allowAllAuthenticated, etc.)
 /**
  * Authorize specific roles
  */

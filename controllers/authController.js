@@ -1,6 +1,7 @@
 const User = require('../models/User');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const ActivityLogger = require('../services/activityLogger');
 
 /**
  * @desc    Login user
@@ -8,6 +9,10 @@ const jwt = require('jsonwebtoken');
  * @access  Public
  */
 exports.login = async (req, res) => {
+  const startTime = Date.now();
+  const ipAddress = req.ip || req.connection.remoteAddress;
+  const userAgent = req.get('User-Agent');
+  
   try {
     const { username, password } = req.body;
     
@@ -29,6 +34,19 @@ exports.login = async (req, res) => {
     });
     
     if (!user) {
+      // Log failed login attempt
+      await ActivityLogger.logError(
+        null,
+        'LOGIN',
+        `Failed login attempt for username: ${username} - User not found`,
+        { code: 'USER_NOT_FOUND' },
+        {
+          ipAddress,
+          userAgent,
+          usernameAttempt: username
+        }
+      );
+      
       return res.status(401).json({
         success: false,
         message: 'Invalid username or password'
@@ -37,6 +55,17 @@ exports.login = async (req, res) => {
     
     // Check if user is active
     if (!user.isActive) {
+      await ActivityLogger.logError(
+        user._id,
+        'LOGIN',
+        `Login attempt for deactivated account: ${user.username}`,
+        { code: 'ACCOUNT_DEACTIVATED' },
+        {
+          ipAddress,
+          userAgent
+        }
+      );
+      
       return res.status(401).json({
         success: false,
         message: 'Account is deactivated. Please contact administrator.'
@@ -47,6 +76,18 @@ exports.login = async (req, res) => {
     const isPasswordValid = await bcrypt.compare(password, user.password);
     
     if (!isPasswordValid) {
+      // Log failed login attempt
+      await ActivityLogger.logError(
+        user._id,
+        'LOGIN',
+        `Failed login attempt for user: ${user.username} - Invalid password`,
+        { code: 'INVALID_PASSWORD' },
+        {
+          ipAddress,
+          userAgent
+        }
+      );
+      
       return res.status(401).json({
         success: false,
         message: 'Invalid username or password'
@@ -136,6 +177,20 @@ exports.login = async (req, res) => {
       updatedAt: user.updatedAt
     };
 
+    // Log successful login
+    await ActivityLogger.logAuth(
+      user._id,
+      'LOGIN',
+      ipAddress,
+      userAgent,
+      {
+        success: true,
+        loginTime: today,
+        streak: user.currentStreak,
+        duration: Date.now() - startTime
+      }
+    );
+
     res.json({
       success: true,
       message: 'Login successful',
@@ -146,6 +201,20 @@ exports.login = async (req, res) => {
     });
   } catch (error) {
     console.error('Login error:', error);
+    
+    // Log login error
+    await ActivityLogger.logError(
+      null,
+      'LOGIN',
+      'System error during login',
+      error,
+      {
+        ipAddress,
+        userAgent,
+        usernameAttempt: req.body.username
+      }
+    );
+    
     res.status(500).json({
       success: false,
       message: 'Server error during login'
@@ -159,6 +228,8 @@ exports.login = async (req, res) => {
  * @access  Private
  */
 exports.getCurrentUser = async (req, res) => {
+  const startTime = Date.now();
+  
   try {
     const user = await User.findById(req.user.id).select('-password');
     
@@ -195,12 +266,33 @@ exports.getCurrentUser = async (req, res) => {
       updatedAt: user.updatedAt
     };
 
+    // Log profile view
+    await ActivityLogger.log({
+      userId: req.user.id,
+      action: 'SYSTEM_VIEW',
+      description: 'Viewed own profile details',
+      resourceType: 'USER',
+      resourceId: user._id,
+      duration: Date.now() - startTime,
+      tags: ['profile', 'view']
+    });
+
     res.json({
       success: true,
       data: userResponse
     });
   } catch (error) {
     console.error('Get current user error:', error);
+    
+    // Log error
+    await ActivityLogger.logError(
+      req.user.id,
+      'USER_VIEW',
+      'Failed to fetch user profile',
+      error,
+      { endpoint: req.originalUrl }
+    );
+    
     res.status(500).json({
       success: false,
       message: 'Server error fetching user data'
@@ -214,6 +306,8 @@ exports.getCurrentUser = async (req, res) => {
  * @access  Private (Admin only)
  */
 exports.debugUsers = async (req, res) => {
+  const startTime = Date.now();
+  
   try {
     // Only allow admins to use this endpoint
     if (req.user.role !== 'admin') {
@@ -231,12 +325,32 @@ exports.debugUsers = async (req, res) => {
       permissionsSummary: user.permissionsSummary
     }));
     
+    // Log debug action
+    await ActivityLogger.logSystem(
+      req.user.id,
+      'SYSTEM_DEBUG',
+      'Admin debugged user accounts',
+      {
+        userCount: users.length,
+        duration: Date.now() - startTime
+      }
+    );
+    
     res.json({
       success: true,
       data: enhancedUsers
     });
   } catch (error) {
     console.error('Debug users error:', error);
+    
+    await ActivityLogger.logError(
+      req.user.id,
+      'SYSTEM_ERROR',
+      'Failed to debug users',
+      error,
+      { endpoint: req.originalUrl }
+    );
+    
     res.status(500).json({
       success: false,
       message: 'Server error'
@@ -250,6 +364,8 @@ exports.debugUsers = async (req, res) => {
  * @access  Private (Admin only)
  */
 exports.getRoles = async (req, res) => {
+  const startTime = Date.now();
+  
   try {
     // Only admins can view role definitions
     if (req.user.role !== 'admin') {
@@ -298,12 +414,31 @@ exports.getRoles = async (req, res) => {
       }
     };
     
+    // Log role view
+    await ActivityLogger.logSystem(
+      req.user.id,
+      'SYSTEM_VIEW',
+      'Admin viewed system role definitions',
+      {
+        duration: Date.now() - startTime
+      }
+    );
+    
     res.json({
       success: true,
       data: roles
     });
   } catch (error) {
     console.error('Get roles error:', error);
+    
+    await ActivityLogger.logError(
+      req.user.id,
+      'SYSTEM_ERROR',
+      'Failed to fetch role definitions',
+      error,
+      { endpoint: req.originalUrl }
+    );
+    
     res.status(500).json({
       success: false,
       message: 'Server error fetching roles'
@@ -317,6 +452,10 @@ exports.getRoles = async (req, res) => {
  * @access  Private
  */
 exports.logout = async (req, res) => {
+  const startTime = Date.now();
+  const ipAddress = req.ip || req.connection.remoteAddress;
+  const userAgent = req.get('User-Agent');
+  
   try {
     // Record logout time in daily activity
     const user = await User.findById(req.user.id);
@@ -340,6 +479,18 @@ exports.logout = async (req, res) => {
       }
     }
     
+    // Log logout
+    await ActivityLogger.logAuth(
+      req.user.id,
+      'LOGOUT',
+      ipAddress,
+      userAgent,
+      {
+        success: true,
+        duration: Date.now() - startTime
+      }
+    );
+    
     // Since we're using JWT, client just needs to discard the token
     res.json({
       success: true,
@@ -347,6 +498,18 @@ exports.logout = async (req, res) => {
     });
   } catch (error) {
     console.error('Logout error:', error);
+    
+    await ActivityLogger.logError(
+      req.user.id,
+      'LOGOUT',
+      'Failed during logout process',
+      error,
+      {
+        ipAddress,
+        userAgent
+      }
+    );
+    
     res.status(500).json({
       success: false,
       message: 'Server error during logout'
@@ -360,6 +523,8 @@ exports.logout = async (req, res) => {
  * @access  Private (Admin only)
  */
 exports.register = async (req, res) => {
+  const startTime = Date.now();
+  
   try {
     // Check if requester is admin
     if (req.user.role !== 'admin') {
@@ -471,6 +636,18 @@ exports.register = async (req, res) => {
       createdAt: user.createdAt
     };
     
+    // Log user creation
+    await ActivityLogger.logUserManagement(
+      req.user.id,
+      'USER_CREATE',
+      user,
+      {
+        createdRole: user.role,
+        createdBy: req.user.username,
+        duration: Date.now() - startTime
+      }
+    );
+    
     res.status(201).json({
       success: true,
       message: 'User registered successfully',
@@ -499,6 +676,19 @@ exports.register = async (req, res) => {
       });
     }
     
+    // Log registration error
+    await ActivityLogger.logError(
+      req.user.id,
+      'USER_CREATE',
+      'Failed to register new user',
+      error,
+      {
+        username: req.body.username,
+        email: req.body.email,
+        role: req.body.role
+      }
+    );
+    
     res.status(500).json({
       success: false,
       message: 'Server error registering user'
@@ -512,6 +702,8 @@ exports.register = async (req, res) => {
  * @access  Private
  */
 exports.changePassword = async (req, res) => {
+  const startTime = Date.now();
+  
   try {
     const { currentPassword, newPassword } = req.body;
     const userId = req.user.id;
@@ -541,6 +733,15 @@ exports.changePassword = async (req, res) => {
     // Verify current password
     const isPasswordValid = await bcrypt.compare(currentPassword, user.password);
     if (!isPasswordValid) {
+      // Log failed password change attempt
+      await ActivityLogger.logError(
+        userId,
+        'PASSWORD_CHANGE',
+        'Failed password change - Incorrect current password',
+        { code: 'INCORRECT_CURRENT_PASSWORD' },
+        {}
+      );
+      
       return res.status(401).json({
         success: false,
         message: 'Current password is incorrect'
@@ -553,12 +754,33 @@ exports.changePassword = async (req, res) => {
     
     await user.save();
     
+    // Log successful password change
+    await ActivityLogger.logAuth(
+      userId,
+      'PASSWORD_CHANGE',
+      req.ip,
+      req.get('User-Agent'),
+      {
+        success: true,
+        duration: Date.now() - startTime
+      }
+    );
+    
     res.json({
       success: true,
       message: 'Password changed successfully'
     });
   } catch (error) {
     console.error('Change password error:', error);
+    
+    await ActivityLogger.logError(
+      req.user.id,
+      'PASSWORD_CHANGE',
+      'Failed to change password',
+      error,
+      { endpoint: req.originalUrl }
+    );
+    
     res.status(500).json({
       success: false,
       message: 'Server error changing password'
@@ -572,6 +794,8 @@ exports.changePassword = async (req, res) => {
  * @access  Private
  */
 exports.getPermissions = async (req, res) => {
+  const startTime = Date.now();
+  
   try {
     const user = await User.findById(req.user.id).select('role permissions');
     
@@ -594,12 +818,32 @@ exports.getPermissions = async (req, res) => {
       description: user.roleDescription
     };
     
+    // Log permission view
+    await ActivityLogger.log({
+      userId: req.user.id,
+      action: 'SYSTEM_VIEW',
+      description: 'Viewed user permissions',
+      resourceType: 'USER',
+      resourceId: user._id,
+      duration: Date.now() - startTime,
+      tags: ['permissions', 'view']
+    });
+    
     res.json({
       success: true,
       data: permissions
     });
   } catch (error) {
     console.error('Get permissions error:', error);
+    
+    await ActivityLogger.logError(
+      req.user.id,
+      'SYSTEM_ERROR',
+      'Failed to fetch permissions',
+      error,
+      { endpoint: req.originalUrl }
+    );
+    
     res.status(500).json({
       success: false,
       message: 'Server error fetching permissions'
@@ -613,6 +857,10 @@ exports.getPermissions = async (req, res) => {
  * @access  Public (for testing only)
  */
 exports.simpleRegister = async (req, res) => {
+  const startTime = Date.now();
+  const ipAddress = req.ip || req.connection.remoteAddress;
+  const userAgent = req.get('User-Agent');
+  
   try {
     const { username, email, password, role } = req.body;
     
@@ -644,6 +892,19 @@ exports.simpleRegister = async (req, res) => {
       { expiresIn: '7d' }
     );
     
+    // Log simple registration (for testing)
+    await ActivityLogger.log({
+      userId: user._id,
+      action: 'USER_CREATE',
+      description: `Simple registration for ${username} (${role || 'officer'})`,
+      resourceType: 'USER',
+      resourceId: user._id,
+      ipAddress,
+      userAgent,
+      duration: Date.now() - startTime,
+      tags: ['simple-register', 'test']
+    });
+    
     res.status(201).json({
       success: true,
       message: 'User registered successfully',
@@ -656,6 +917,21 @@ exports.simpleRegister = async (req, res) => {
       }
     });
   } catch (error) {
+    console.error('Simple register error:', error);
+    
+    await ActivityLogger.logError(
+      null,
+      'USER_CREATE',
+      'Failed simple registration',
+      error,
+      {
+        ipAddress,
+        userAgent,
+        username: req.body.username,
+        email: req.body.email
+      }
+    );
+    
     res.status(500).json({ 
       success: false,
       error: error.message 
@@ -669,12 +945,24 @@ exports.simpleRegister = async (req, res) => {
  * @access  Public (for testing only)
  */
 exports.simpleLogin = async (req, res) => {
+  const startTime = Date.now();
+  const ipAddress = req.ip || req.connection.remoteAddress;
+  const userAgent = req.get('User-Agent');
+  
   try {
     const { email, password } = req.body;
     
     // Find user
     const user = await User.findOne({ email });
     if (!user) {
+      await ActivityLogger.logError(
+        null,
+        'LOGIN',
+        `Simple login failed - User not found: ${email}`,
+        { code: 'USER_NOT_FOUND' },
+        { ipAddress, userAgent }
+      );
+      
       return res.status(401).json({ 
         success: false,
         error: 'Invalid credentials' 
@@ -684,6 +972,14 @@ exports.simpleLogin = async (req, res) => {
     // Check password
     const isPasswordValid = await bcrypt.compare(password, user.password);
     if (!isPasswordValid) {
+      await ActivityLogger.logError(
+        user._id,
+        'LOGIN',
+        `Simple login failed - Invalid password for: ${email}`,
+        { code: 'INVALID_PASSWORD' },
+        { ipAddress, userAgent }
+      );
+      
       return res.status(401).json({ 
         success: false,
         error: 'Invalid credentials' 
@@ -701,6 +997,19 @@ exports.simpleLogin = async (req, res) => {
       { expiresIn: '7d' }
     );
     
+    // Log successful simple login
+    await ActivityLogger.logAuth(
+      user._id,
+      'LOGIN',
+      ipAddress,
+      userAgent,
+      {
+        success: true,
+        method: 'simple',
+        duration: Date.now() - startTime
+      }
+    );
+    
     res.json({
       success: true,
       message: 'Login successful',
@@ -713,6 +1022,20 @@ exports.simpleLogin = async (req, res) => {
       }
     });
   } catch (error) {
+    console.error('Simple login error:', error);
+    
+    await ActivityLogger.logError(
+      null,
+      'LOGIN',
+      'System error during simple login',
+      error,
+      {
+        ipAddress,
+        userAgent,
+        email: req.body.email
+      }
+    );
+    
     res.status(500).json({ 
       success: false,
       error: error.message 

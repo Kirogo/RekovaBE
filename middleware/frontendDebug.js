@@ -1,3 +1,4 @@
+//middleware/frontendDebug.js
 /**
  * Middleware to debug and fix frontend requests
  */
@@ -33,20 +34,33 @@ exports.frontendDebug = (req, res, next) => {
  * Response interceptor to ensure consistent API responses
  */
 exports.apiResponseFormatter = (req, res, next) => {
+  // Store the original json method
   const originalJson = res.json;
   
+  // Override the json method
   res.json = function(data) {
-    // Ensure all responses have consistent structure
+    // Ensure we don't double-wrap responses that are already formatted
+    if (data && data.success !== undefined && data.timestamp !== undefined) {
+      // Data is already formatted, pass it through
+      return originalJson.call(this, data);
+    }
+    
+    // Format the response
     const formattedData = {
-      success: data.success !== undefined ? data.success : true,
-      message: data.message || 'Request successful',
-      data: data.data || data,
+      success: data && data.success !== undefined ? data.success : true,
+      message: data && data.message ? data.message : 'Request successful',
+      data: data && data.data !== undefined ? data.data : data,
       timestamp: new Date().toISOString()
     };
     
     // Add pagination if present
-    if (data.pagination) {
+    if (data && data.pagination) {
       formattedData.pagination = data.pagination;
+    }
+    
+    // Add meta data if present
+    if (data && data.meta) {
+      formattedData.meta = data.meta;
     }
     
     return originalJson.call(this, formattedData);
