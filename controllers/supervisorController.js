@@ -2,6 +2,7 @@
 const Customer = require('../models/Customer');
 const User = require('../models/User');
 const Transaction = require('../models/Transaction');
+const Promise = require('../models/Promise');
 const ActivityLogger = require('../services/activityLogger');
 
 // NOTE: Comment model might not exist - we'll handle it gracefully
@@ -40,24 +41,28 @@ exports.getDashboardOverview = async (req, res) => {
       isActive: true 
     }).select('name username email loanType isActive lastLogin');
     
-    // 2. Get team performance summary
-    const performanceSummary = await getTeamPerformanceSummary();
+    const teamMemberIds = teamMembers.map(member => member._id);
     
-    // 3. Get assignment statistics - simplified version
+    // 2. Get team performance summary
+    const performanceSummary = await getTeamPerformanceSummary(teamMemberIds);
+    
+    // 3. Get assignment statistics
     const assignmentStats = await getAssignmentStats();
     
-    // 4. Get recent activities FROM ACTIVITY LOGGER
-    const teamMemberIds = teamMembers.map(member => member._id);
+    // 4. Get recent IMPORTANT activities only (filtered)
     const recentActivities = await ActivityLogger.getTeamActivities(teamMemberIds, 15);
     
-    // 5. Get loan type distribution
+    // 5. Get upcoming due promises (important for supervisor to see)
+    const upcomingPromises = await getUpcomingDuePromises(teamMemberIds);
+    
+    // 6. Get loan type distribution
     const loanTypeDistribution = await Customer.aggregate([
       { $match: { isActive: true } },
       { $group: { _id: '$loanType', count: { $sum: 1 } } },
       { $sort: { count: -1 } }
     ]);
     
-    // 6. Get today's collections
+    // 7. Get today's collections
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     const tomorrow = new Date(today);
@@ -79,7 +84,7 @@ exports.getDashboardOverview = async (req, res) => {
       }
     ]);
     
-    // 7. Get call statistics from Activity model
+    // 8. Get call statistics from Activity model (only important calls)
     const sevenDaysAgo = new Date();
     sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
     
@@ -103,7 +108,7 @@ exports.getDashboardOverview = async (req, res) => {
       { $limit: 7 }
     ]);
     
-    // 8. Get officers by loan type
+    // 9. Get officers by loan type
     const officersByLoanType = await User.aggregate([
       { 
         $match: { 
@@ -122,19 +127,17 @@ exports.getDashboardOverview = async (req, res) => {
       { $sort: { officerCount: -1 } }
     ]);
     
-    // 9. Get unassigned customers count
+    // 10. Get unassigned customers count
     const unassignedCustomers = await Customer.countDocuments({
       assignedTo: null,
       isActive: true
     });
     
-    // 10. Get activity statistics for the week
-    const activityStats = await ActivityLogger.getActivityStats(teamMemberIds, sevenDaysAgo, new Date());
+    // 11. Get IMPORTANT activity statistics for the week
+    const importantActivitySummary = await ActivityLogger.getImportantActivitySummary(teamMemberIds, 7);
     
-    const callStats = activityStats.find(stat => stat._id === 'PROMISE_FOLLOWUP') || { count: 0 };
-    const loginStats = activityStats.find(stat => stat._id === 'LOGIN') || { count: 0 };
-    const transactionStats = activityStats.find(stat => stat._id === 'TRANSACTION_SUCCESS') || { count: 0 };
-    const promiseStats = activityStats.find(stat => stat._id === 'PROMISE_CREATE') || { count: 0 };
+    // 12. Get broken promises (important for supervisor monitoring)
+    const brokenPromises = await getBrokenPromises(teamMemberIds, 30); // Last 30 days
     
     // Log supervisor dashboard view
     await ActivityLogger.logSupervisor(
@@ -147,7 +150,10 @@ exports.getDashboardOverview = async (req, res) => {
           performanceSummary,
           assignmentStats: assignmentStats || {},
           loanTypeDistribution,
-          unassignedCustomers
+          unassignedCustomers,
+          importantActivities: recentActivities.length,
+          upcomingPromises: upcomingPromises.length,
+          brokenPromises: brokenPromises.length
         },
         duration: Date.now() - startTime
       }
@@ -166,22 +172,18 @@ exports.getDashboardOverview = async (req, res) => {
         },
         performanceSummary,
         assignmentStats: assignmentStats || {},
-        recentActivities, // This now comes from ActivityLogger
+        recentActivities, // IMPORTANT activities only
+        upcomingPromises, // Promises due soon
+        brokenPromises, // Broken promises for monitoring
         loanTypeDistribution,
         todaysCollections: todaysCollections[0] || { totalAmount: 0, count: 0 },
         callStats: {
           last7Days: callStatsData,
-          totalThisWeek: callStats.count || 0,
-          callsToday: callStats.today || 0
+          totalThisWeek: callStatsData.reduce((sum, day) => sum + day.count, 0)
         },
         officersByLoanType,
         unassignedCustomers,
-        activityStats: {
-          logins: loginStats.count || 0,
-          transactions: transactionStats.count || 0,
-          promises: promiseStats.count || 0,
-          calls: callStats.count || 0
-        },
+        activitySummary: importantActivitySummary, // Summary of important activities
         timestamp: new Date(),
         user: {
           role: user.role,
@@ -211,22 +213,122 @@ exports.getDashboardOverview = async (req, res) => {
 };
 
 /**
+ * @desc    Get upcoming due promises (next 7 days)
+ */
+async function getUpcomingDuePromises(teamMemberIds) {
+  try {
+    // Get customers assigned to these officers
+    const assignedCustomers = await Customer.find({
+      assignedTo: { $in: teamMemberIds },
+      isActive: true
+    }).select('_id');
+    
+    const customerIds = assignedCustomers.map(c => c._id);
+    
+    if (customerIds.length === 0) return [];
+    
+    // Get promises due in the next 7 days
+    const today = new Date();
+    const nextWeek = new Date();
+    nextWeek.setDate(nextWeek.getDate() + 7);
+    
+    const upcomingPromises = await Promise.find({
+      customerId: { $in: customerIds },
+      promiseDate: { $gte: today, $lte: nextWeek },
+      status: { $in: ['pending', 'due'] }
+    })
+    .populate('customerId', 'customerName phoneNumber loanType')
+    .populate('createdBy', 'username name')
+    .sort('promiseDate')
+    .limit(10)
+    .lean();
+    
+    // Transform for frontend
+    return upcomingPromises.map(promise => ({
+      id: promise._id,
+      customerName: promise.customerId?.customerName || 'Unknown Customer',
+      phoneNumber: promise.customerId?.phoneNumber || 'N/A',
+      amount: promise.promiseAmount,
+      dueDate: promise.promiseDate,
+      officer: promise.createdBy?.name || promise.createdBy?.username || 'Unknown',
+      status: promise.status,
+      daysUntilDue: Math.ceil((new Date(promise.promiseDate) - today) / (1000 * 60 * 60 * 24))
+    }));
+  } catch (error) {
+    console.error('Error getting upcoming promises:', error);
+    return [];
+  }
+}
+
+/**
+ * @desc    Get broken promises (last 30 days)
+ */
+async function getBrokenPromises(teamMemberIds, days = 30) {
+  try {
+    // Get customers assigned to these officers
+    const assignedCustomers = await Customer.find({
+      assignedTo: { $in: teamMemberIds },
+      isActive: true
+    }).select('_id');
+    
+    const customerIds = assignedCustomers.map(c => c._id);
+    
+    if (customerIds.length === 0) return [];
+    
+    // Get broken promises from last X days
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - days);
+    
+    const brokenPromises = await Promise.find({
+      customerId: { $in: customerIds },
+      status: 'broken',
+      updatedAt: { $gte: startDate }
+    })
+    .populate('customerId', 'customerName phoneNumber loanType')
+    .populate('createdBy', 'username name')
+    .sort({ updatedAt: -1 })
+    .limit(10)
+    .lean();
+    
+    // Transform for frontend
+    return brokenPromises.map(promise => ({
+      id: promise._id,
+      customerName: promise.customerId?.customerName || 'Unknown Customer',
+      phoneNumber: promise.customerId?.phoneNumber || 'N/A',
+      amount: promise.promiseAmount,
+      dueDate: promise.promiseDate,
+      officer: promise.createdBy?.name || promise.createdBy?.username || 'Unknown',
+      brokenDate: promise.updatedAt,
+      daysSinceBroken: Math.floor((new Date() - new Date(promise.updatedAt)) / (1000 * 60 * 60 * 24))
+    }));
+  } catch (error) {
+    console.error('Error getting broken promises:', error);
+    return [];
+  }
+}
+
+/**
  * @desc    Get team performance summary
  */
-async function getTeamPerformanceSummary() {
+async function getTeamPerformanceSummary(teamMemberIds) {
   try {
-    const officers = await User.find({ role: 'officer', isActive: true })
-      .select('username name email loanType')
-      .lean();
+    const officers = await User.find({ 
+      _id: { $in: teamMemberIds },
+      role: 'officer', 
+      isActive: true 
+    })
+    .select('username name email loanType')
+    .lean();
     
     // Get customers assigned to officers
     const assignedCustomers = await Customer.find({
-      assignedTo: { $in: officers.map(o => o._id) },
+      assignedTo: { $in: teamMemberIds },
       isActive: true
     });
     
     // Get successful transactions
     const transactions = await Transaction.find({
+      initiatedByUserId: { $in: teamMemberIds },
       status: 'SUCCESS'
     });
     
@@ -254,6 +356,9 @@ async function getTeamPerformanceSummary() {
       ).length;
       
       // Get calls made by this officer (from Activity model)
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      
       let callsToday = 0;
       
       return {
@@ -314,20 +419,6 @@ async function getTeamPerformanceSummary() {
       topPerformers: [],
       byLoanType: {}
     };
-  }
-}
-
-/**
- * @desc    Get recent activities
- */
-async function getRecentActivities(limit = 10) {
-  try {
-    // This function is kept for backward compatibility
-    // But we're now using ActivityLogger.getTeamActivities instead
-    return [];
-  } catch (error) {
-    console.error('Recent activities error:', error);
-    return [];
   }
 }
 
@@ -438,6 +529,20 @@ exports.getOfficerPerformance = async (req, res) => {
       initiatedByUserId: officerId
     }).sort({ createdAt: -1 });
     
+    // Get officer's important activities
+    const importantActivities = await ActivityLogger.getTeamActivities([officerId], 10);
+    
+    // Get officer's upcoming promises
+    const assignedCustomerIds = assignedCustomers.map(c => c._id);
+    const upcomingPromises = await Promise.find({
+      customerId: { $in: assignedCustomerIds },
+      promiseDate: { $gte: new Date() },
+      status: { $in: ['pending', 'due'] }
+    })
+    .sort('promiseDate')
+    .limit(5)
+    .lean();
+    
     // Calculate performance metrics
     const successfulTransactions = transactions.filter(t => t.status === 'SUCCESS');
     const totalCollections = successfulTransactions.reduce((sum, t) => sum + (t.amount || 0), 0);
@@ -461,9 +566,10 @@ exports.getOfficerPerformance = async (req, res) => {
         averageAmount: transactions.length > 0 ? 
           totalCollections / transactions.length : 0,
         totalLoanAmount: assignedCustomers.reduce((sum, c) => sum + (c.loanAmount || 0), 0),
-        totalArrears: assignedCustomers.reduce((sum, c) => sum + (c.arrearsAmount || 0), 0)
+        totalArrears: assignedCustomers.reduce((sum, c) => sum + (c.arrearsAmount || 0), 0),
+        importantActivities: importantActivities.length
       },
-      assignedCustomers: assignedCustomers.map(customer => ({
+      assignedCustomers: assignedCustomers.slice(0, 10).map(customer => ({
         name: customer.customerName,
         phone: customer.phoneNumber,
         loanAmount: customer.loanAmount,
@@ -477,6 +583,13 @@ exports.getOfficerPerformance = async (req, res) => {
         status: t.status,
         date: t.createdAt,
         description: t.description
+      })),
+      importantActivities, // Only important activities
+      upcomingPromises: upcomingPromises.map(p => ({
+        customerName: assignedCustomers.find(c => c._id.toString() === p.customerId.toString())?.customerName || 'Unknown',
+        amount: p.promiseAmount,
+        dueDate: p.promiseDate,
+        status: p.status
       }))
     };
     
@@ -601,20 +714,20 @@ exports.assignLoanTypeSpecialization = async (req, res) => {
     officer.loanType = loanType;
     await officer.save();
     
-    // Log successful assignment
-    await ActivityLogger.logSupervisor(
-      user.id,
-      'LOAN_TYPE_ASSIGN',
-      `Assigned ${loanType} specialization to officer: ${officer.name || officer.username}`,
-      {
-        officerId,
-        officerName: officer.name || officer.username,
+    // Log successful assignment (this is important for supervisor)
+    await ActivityLogger.log({
+      userId: user.id,
+      action: 'USER_UPDATE',
+      description: `Assigned ${loanType} specialization to officer: ${officer.name || officer.username}`,
+      resourceType: 'USER',
+      resourceId: officer._id,
+      requestDetails: {
         oldLoanType,
-        newLoanType: loanType,
-        assignedBy: user.username,
-        duration: Date.now() - startTime
-      }
-    );
+        newLoanType: loanType
+      },
+      duration: Date.now() - startTime,
+      tags: ['specialization', 'officer', 'supervisor']
+    });
     
     res.json({
       success: true,
@@ -729,16 +842,20 @@ exports.runBulkAssignment = async (req, res) => {
           success: true
         });
         
-        // Log the assignment activity
-        await ActivityLogger.logCustomer(
-          user.id,
-          'CUSTOMER_ASSIGN',
-          customer,
-          {
+        // Log the assignment activity (important for supervisor)
+        await ActivityLogger.log({
+          userId: user.id,
+          action: 'CUSTOMER_ASSIGN',
+          description: `Assigned customer ${customer.customerName} to ${officer.name || officer.username}`,
+          resourceType: 'CUSTOMER',
+          resourceId: customer._id,
+          requestDetails: {
             assignedOfficer: officer.name || officer.username,
-            assignmentType: 'bulk'
-          }
-        );
+            assignmentType: 'bulk',
+            loanType: customer.loanType
+          },
+          tags: ['assignment', 'bulk', 'supervisor']
+        });
         
       } catch (error) {
         result.data.failedCount++;
@@ -750,23 +867,25 @@ exports.runBulkAssignment = async (req, res) => {
       }
     }
     
-    // Log bulk assignment
-    await ActivityLogger.logSupervisor(
-      user.id,
-      'BULK_ASSIGNMENT',
-      `Performed bulk assignment: ${result.data.assignedCount} customers assigned`,
-      {
+    // Log bulk assignment (important activity)
+    await ActivityLogger.log({
+      userId: user.id,
+      action: 'BULK_ASSIGNMENT',
+      description: `Performed bulk assignment: ${result.data.assignedCount} customers assigned`,
+      resourceType: 'SYSTEM',
+      requestDetails: {
         assignmentType: 'round_robin',
         loanType,
         limit: limit || 50,
         results: {
           assignedCount: result.data.assignedCount,
           failedCount: result.data.failedCount,
-          officersInvolved: officers.length,
-          duration: Date.now() - startTime
+          officersInvolved: officers.length
         }
-      }
-    );
+      },
+      duration: Date.now() - startTime,
+      tags: ['bulk_assignment', 'supervisor', 'important']
+    });
     
     res.json(result);
     
@@ -824,6 +943,8 @@ exports.generateTeamReport = async (req, res) => {
       .select('username name email loanType')
       .lean();
     
+    const officerIds = officers.map(o => o._id);
+    
     // Get transactions in period
     const transactions = await Transaction.find({
       createdAt: { $gte: start, $lte: end },
@@ -834,8 +955,12 @@ exports.generateTeamReport = async (req, res) => {
     
     // Get assigned customers
     const assignedCustomers = await Customer.find({
-      assignedTo: { $in: officers.map(o => o._id) }
+      assignedTo: { $in: officerIds }
     });
+    
+    // Get important activity summary for the period
+    const importantActivitySummary = await ActivityLogger.getImportantActivitySummary(officerIds, 
+      Math.ceil((end - start) / (1000 * 60 * 60 * 24)));
     
     // Build report
     const report = {
@@ -853,7 +978,8 @@ exports.generateTeamReport = async (req, res) => {
         totalTransactions: transactions.length,
         totalAssignedCustomers: assignedCustomers.length,
         averagePerOfficer: officers.length > 0 ? 
-          transactions.reduce((sum, t) => sum + (t.amount || 0), 0) / officers.length : 0
+          transactions.reduce((sum, t) => sum + (t.amount || 0), 0) / officers.length : 0,
+        importantActivitySummary
       },
       officers: officers.map(officer => {
         const officerTransactions = transactions.filter(t => 
@@ -875,7 +1001,9 @@ exports.generateTeamReport = async (req, res) => {
             transactions: officerTransactions.length,
             assignedCustomers: officerCustomers.length,
             averageAmount: officerTransactions.length > 0 ? 
-              totalCollections / officerTransactions.length : 0
+              totalCollections / officerTransactions.length : 0,
+            successRate: officerTransactions.length > 0 ? 
+              (officerTransactions.filter(t => t.status === 'SUCCESS').length / officerTransactions.length) * 100 : 0
           }
         };
       }).sort((a, b) => b.performance.collections - a.performance.collections)
@@ -886,23 +1014,25 @@ exports.generateTeamReport = async (req, res) => {
       officer.rank = index + 1;
     });
     
-    // Log report generation
-    await ActivityLogger.logSupervisor(
-      user.id,
-      'TEAM_REPORT_GENERATE',
-      'Generated team performance report',
-      {
+    // Log report generation (important activity)
+    await ActivityLogger.log({
+      userId: user.id,
+      action: 'REPORT_GENERATE',
+      description: 'Generated team performance report',
+      resourceType: 'REPORT',
+      requestDetails: {
         dateRange: { start, end },
         format,
         reportSize: report.officers.length,
-        statistics: report.summary,
-        duration: Date.now() - startTime
-      }
-    );
+        statistics: report.summary
+      },
+      duration: Date.now() - startTime,
+      tags: ['report', 'team_performance', 'supervisor']
+    });
     
     if (format === 'csv') {
       // Generate CSV
-      const csvHeader = 'Rank,Officer,Name,Loan Type,Email,Collections,Transactions,Assigned Customers,Avg Amount\n';
+      const csvHeader = 'Rank,Officer,Name,Loan Type,Email,Collections,Transactions,Assigned Customers,Avg Amount,Success Rate\n';
       
       const csvRows = report.officers.map(o => {
         const escapeCSV = (field) => {
@@ -923,7 +1053,8 @@ exports.generateTeamReport = async (req, res) => {
           o.performance.collections.toFixed(2),
           o.performance.transactions,
           o.performance.assignedCustomers,
-          o.performance.averageAmount.toFixed(2)
+          o.performance.averageAmount.toFixed(2),
+          o.performance.successRate.toFixed(1)
         ].join(',');
       });
       
@@ -1008,8 +1139,8 @@ exports.getOfficers = async (req, res) => {
       assignedCountMap[item._id.toString()] = item.count;
     });
     
-    // Enhance officer data
-    const enhancedOfficers = officers.map(officer => {
+    // Enhance officer data with recent important activity count
+    const enhancedOfficers = await Promise.all(officers.map(async (officer) => {
       const assignedCount = assignedCountMap[officer._id.toString()] || 0;
       const capacity = 50; // Default capacity
       const utilization = capacity > 0 ? (assignedCount / capacity) * 100 : 0;
@@ -1017,29 +1148,40 @@ exports.getOfficers = async (req, res) => {
       // Find loan type stats for this officer
       const loanTypeStat = loanTypeStats.find(stat => stat._id === officer.loanType);
       
+      // Get officer's recent important activities count
+      const recentActivities = await ActivityLogger.getTeamActivities([officer._id], 5);
+      
       return {
         ...officer,
         stats: {
           assignedCustomers: assignedCount,
           capacity: capacity,
           utilization: utilization.toFixed(1) + '%',
-          loanTypeCustomers: loanTypeStat ? loanTypeStat.customerCount : 0
-        }
+          loanTypeCustomers: loanTypeStat ? loanTypeStat.customerCount : 0,
+          recentActivities: recentActivities.length
+        },
+        recentActivitiesPreview: recentActivities.slice(0, 3).map(activity => ({
+          type: activity.type,
+          description: activity.details.substring(0, 50) + (activity.details.length > 50 ? '...' : ''),
+          time: activity.time
+        }))
       };
-    });
+    }));
     
     // Log officers list view
-    await ActivityLogger.logSupervisor(
-      req.user.id,
-      'OFFICER_PERFORMANCE_VIEW',
-      `Viewed officers list (${enhancedOfficers.length} officers)`,
-      {
+    await ActivityLogger.log({
+      userId: req.user.id,
+      action: 'USER_VIEW',
+      description: `Viewed officers list (${enhancedOfficers.length} officers)`,
+      resourceType: 'USER',
+      requestDetails: {
         officerCount: enhancedOfficers.length,
         totalAssignedCustomers: assignedCounts.reduce((sum, item) => sum + item.count, 0),
-        loanTypesCovered: [...new Set(officers.map(o => o.loanType).filter(Boolean))].length,
-        duration: Date.now() - startTime
-      }
-    );
+        loanTypesCovered: [...new Set(officers.map(o => o.loanType).filter(Boolean))].length
+      },
+      duration: Date.now() - startTime,
+      tags: ['officers', 'supervisor', 'management']
+    });
     
     res.json({
       success: true,

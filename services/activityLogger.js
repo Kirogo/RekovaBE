@@ -1,5 +1,4 @@
 //services/activityService.js
-
 const Activity = require('../models/Activity');
 const User = require('../models/User');
 
@@ -317,6 +316,28 @@ class ActivityLogger {
   }
 
   /**
+   * Log promise due soon (for supervisor alerts)
+   */
+  static async logPromiseDueSoon(userId, customer, promise) {
+    return this.log({
+      userId,
+      action: 'PROMISE_FOLLOWUP',
+      description: `Promise of Ksh ${promise.promiseAmount} from ${customer.name || customer.customerName} is due soon`,
+      resourceType: 'PROMISE',
+      resourceId: promise._id,
+      resourceDetails: {
+        customerId: customer.customerId,
+        name: customer.name || customer.customerName,
+        promiseAmount: promise.promiseAmount,
+        dueDate: promise.promiseDate,
+        status: 'due_soon'
+      },
+      amount: promise.promiseAmount,
+      tags: ['promise', 'due_soon', 'alert', 'supervisor']
+    });
+  }
+
+  /**
    * Log user management activity (admin/supervisor only)
    */
   static async logUserManagement(userId, action, targetUser, details = {}) {
@@ -423,12 +444,27 @@ class ActivityLogger {
   }
 
   /**
-   * Get recent team activities for supervisor dashboard
+   * Get recent team activities for supervisor dashboard - FILTERED VERSION
+   * Only shows important activities: logins, transactions, calls, promises, and alerts
    */
   static async getTeamActivities(teamMemberIds, limit = 15) {
     try {
+      // Only get IMPORTANT activities for supervisor
+      const importantActions = [
+        'LOGIN',                    // Officer logins
+        'TRANSACTION_SUCCESS',      // Successful payments
+        'TRANSACTION_INITIATE',     // Payment initiated
+        'PROMISE_FOLLOWUP',         // Calls and follow-ups
+        'PROMISE_CREATE',           // Promises made
+        'PROMISE_FULFILL',          // Promises fulfilled (payments received)
+        'PROMISE_BREAK',            // Broken promises
+        'CUSTOMER_ASSIGN',          // Customer assignments
+        'BULK_ASSIGNMENT'           // Bulk assignments
+      ];
+
       const activities = await Activity.find({
-        userId: { $in: teamMemberIds }
+        userId: { $in: teamMemberIds },
+        action: { $in: importantActions }  // FILTER: Only important activities
       })
       .sort({ createdAt: -1 })
       .limit(limit)
@@ -439,13 +475,13 @@ class ActivityLogger {
         // Map action to activity type for frontend
         let activityType = 'activity';
         if (activity.action === 'LOGIN') activityType = 'login';
-        else if (activity.action === 'TRANSACTION_SUCCESS') activityType = 'transaction';
+        else if (activity.action === 'TRANSACTION_SUCCESS' || activity.action === 'TRANSACTION_INITIATE') activityType = 'transaction';
         else if (activity.action === 'PROMISE_FOLLOWUP') activityType = 'call';
         else if (activity.action === 'PROMISE_CREATE') activityType = 'promise_made';
-        else if (activity.action === 'CUSTOMER_ASSIGN') activityType = 'assignment';
-        else if (activity.action === 'CUSTOMER_VIEW') activityType = 'customer_update';
+        else if (activity.action === 'PROMISE_FULFILL') activityType = 'promise_fulfilled';
         else if (activity.action === 'PROMISE_BREAK') activityType = 'promise_broken';
-        else if (activity.action === 'PROMISE_FULFILL') activityType = 'payment_received';
+        else if (activity.action === 'CUSTOMER_ASSIGN' || activity.action === 'BULK_ASSIGNMENT') activityType = 'assignment';
+        // We're intentionally NOT including CUSTOMER_VIEW, USER_VIEW, etc.
 
         return {
           type: activityType,
@@ -454,7 +490,8 @@ class ActivityLogger {
           details: activity.description,
           amount: activity.amount || null,
           action: activity.action,
-          resourceType: activity.resourceType
+          resourceType: activity.resourceType,
+          isImportant: true  // Flag for important activities
         };
       });
     } catch (error) {
@@ -493,6 +530,68 @@ class ActivityLogger {
     } catch (error) {
       console.error('Error fetching activity stats:', error);
       return [];
+    }
+  }
+
+  /**
+   * Get important activity summary for supervisor (counts of important activities)
+   */
+  static async getImportantActivitySummary(teamMemberIds, days = 7) {
+    try {
+      const startDate = new Date();
+      startDate.setDate(startDate.getDate() - days);
+      
+      const importantActions = [
+        'LOGIN',
+        'TRANSACTION_SUCCESS',
+        'PROMISE_FOLLOWUP',
+        'PROMISE_CREATE',
+        'PROMISE_FULFILL',
+        'PROMISE_BREAK'
+      ];
+
+      const summary = await Activity.aggregate([
+        {
+          $match: {
+            userId: { $in: teamMemberIds },
+            action: { $in: importantActions },
+            createdAt: { $gte: startDate }
+          }
+        },
+        {
+          $group: {
+            _id: '$action',
+            count: { $sum: 1 },
+            totalAmount: { $sum: '$amount' }
+          }
+        }
+      ]);
+
+      // Format the summary
+      const formattedSummary = {
+        logins: summary.find(s => s._id === 'LOGIN')?.count || 0,
+        transactions: summary.find(s => s._id === 'TRANSACTION_SUCCESS')?.count || 0,
+        calls: summary.find(s => s._id === 'PROMISE_FOLLOWUP')?.count || 0,
+        promisesMade: summary.find(s => s._id === 'PROMISE_CREATE')?.count || 0,
+        promisesFulfilled: summary.find(s => s._id === 'PROMISE_FULFILL')?.count || 0,
+        promisesBroken: summary.find(s => s._id === 'PROMISE_BREAK')?.count || 0,
+        totalCollections: summary.find(s => s._id === 'TRANSACTION_SUCCESS')?.totalAmount || 0,
+        totalPromises: summary.find(s => s._id === 'PROMISE_CREATE')?.totalAmount || 0
+      };
+
+      return formattedSummary;
+    } catch (error) {
+      console.error('Error fetching activity summary:', error);
+      return {
+        logins: 0,
+        transactions: 0,
+        calls: 0,
+        promisesMade: 0,
+        promisesFulfilled: 0,
+        promisesBroken: 0,
+        totalCollections: 0,
+        totalPromises: 0
+      };
     }
   }
 }
