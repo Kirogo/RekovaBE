@@ -1,11 +1,11 @@
-// middleware/auth.js
+// middleware/auth.js - FIXED VERSION
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 
 /**
  * Protect routes - verify JWT token
  */
-exports.protect = async (req, res, next) => {
+const protect = async (req, res, next) => {
   try {
     // DEBUG LOGGING
     console.log('=== AUTH MIDDLEWARE DEBUG ===');
@@ -114,11 +114,10 @@ exports.protect = async (req, res, next) => {
   }
 };
 
-// ... rest of the file remains the same (authorize, allowAllAuthenticated, etc.)
 /**
  * Authorize specific roles
  */
-exports.authorize = (...roles) => {
+const authorize = (...roles) => {
   return (req, res, next) => {
     if (!req.user) {
       return res.status(401).json({
@@ -153,7 +152,7 @@ exports.authorize = (...roles) => {
  * Authorize all authenticated users - use this for common routes
  * This is the default - just checks if user is authenticated
  */
-exports.allowAllAuthenticated = (req, res, next) => {
+const allowAllAuthenticated = (req, res, next) => {
   if (!req.user) {
     return res.status(401).json({
       success: false,
@@ -166,7 +165,7 @@ exports.allowAllAuthenticated = (req, res, next) => {
 /**
  * Check transaction amount limit for officers
  */
-exports.checkTransactionLimit = async (req, res, next) => {
+const checkTransactionLimit = async (req, res, next) => {
   try {
     const { amount } = req.body;
     const user = req.user;
@@ -219,7 +218,7 @@ exports.checkTransactionLimit = async (req, res, next) => {
 /**
  * Check if user can approve transactions
  */
-exports.canApproveTransactions = (req, res, next) => {
+const canApproveTransactions = (req, res, next) => {
   if (!req.user) {
     return res.status(401).json({
       success: false,
@@ -241,7 +240,7 @@ exports.canApproveTransactions = (req, res, next) => {
 /**
  * Check if user can view all performance data
  */
-exports.canViewAllPerformance = (req, res, next) => {
+const canViewAllPerformance = (req, res, next) => {
   if (!req.user) {
     return res.status(401).json({
       success: false,
@@ -257,7 +256,7 @@ exports.canViewAllPerformance = (req, res, next) => {
 /**
  * Check if user can manage users
  */
-exports.canManageUsers = (req, res, next) => {
+const canManageUsers = (req, res, next) => {
   if (!req.user) {
     return res.status(401).json({
       success: false,
@@ -279,7 +278,7 @@ exports.canManageUsers = (req, res, next) => {
 /**
  * Check if user can export data
  */
-exports.canExportData = (req, res, next) => {
+const canExportData = (req, res, next) => {
   if (!req.user) {
     return res.status(401).json({
       success: false,
@@ -301,7 +300,7 @@ exports.canExportData = (req, res, next) => {
 /**
  * Check if user can access management features
  */
-exports.canManageSettings = (req, res, next) => {
+const canManageSettings = (req, res, next) => {
   if (!req.user) {
     return res.status(401).json({
       success: false,
@@ -323,7 +322,7 @@ exports.canManageSettings = (req, res, next) => {
 /**
  * Get user's team members (for supervisors)
  */
-exports.getTeamMembers = async (req, res, next) => {
+const getTeamMembers = async (req, res, next) => {
   try {
     const user = req.user;
     
@@ -366,4 +365,18 @@ exports.getTeamMembers = async (req, res, next) => {
       message: 'Error fetching team members'
     });
   }
+};
+
+// Export all functions as an object
+module.exports = {
+    protect,
+    authorize,
+    allowAllAuthenticated,
+    checkTransactionLimit,
+    canApproveTransactions,
+    canViewAllPerformance,
+    canManageUsers,
+    canExportData,
+    canManageSettings,
+    getTeamMembers
 };

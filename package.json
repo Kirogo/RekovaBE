@@ -12,23 +12,32 @@
     "verify": "node verification/endToend.js",
     "verify-schema": "node verification/schema-verify.js",
     "verify-migration": "node verification/migration-verify.js",
-    "verify-assignment": "node verification/assignment-verify.js"
+    "verify-assignment": "node verification/assignment-verify.js",
+    "test-reports": "node scripts/test-report-generation.js"
   },
   "dependencies": {
+    "@react-pdf/renderer": "^4.3.2",
     "axios": "^1.13.2",
     "bcryptjs": "^2.4.3",
+    "canvas": "^3.2.1",
+    "chart.js": "^4.5.1",
     "cors": "^2.8.5",
     "dotenv": "^16.6.1",
+    "exceljs": "^4.4.0",
     "express": "^4.22.1",
     "express-async-handler": "^1.2.0",
     "git-filter-repo": "^0.0.30",
+    "html-to-image": "^1.11.13",
     "jsonwebtoken": "^9.0.3",
     "lowdb": "^6.0.1",
     "mongoose": "^9.0.2",
     "morgan": "^1.10.1",
     "nanoid": "^5.0.4",
     "node-cron": "^4.2.1",
-    "twilio": "^5.11.2"
+    "pdfkit": "^0.15.0",
+    "react-chartjs-2": "^5.3.1",
+    "twilio": "^5.11.2",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "nodemon": "^3.0.1"

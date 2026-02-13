@@ -1,0 +1,226 @@
+<svg width="1000" height="800" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+            <!-- ========== BACKGROUND ========== -->
+            <rect width="1000" height="800" fill="#FFFFFF" />
+            
+            <!-- ========== HEADER SECTION ========== -->
+            <rect x="30" y="30" width="940" height="100" fill="#F8F9FA" stroke="#2C3E50" stroke-width="1" rx="10" ry="10" />
+            
+            <!-- Title -->
+            <text x="500" y="65" font-family="Century Gothic, Arial, Helvetica, sans-serif" font-size="28" font-weight="bold" fill="#2C3E50" text-anchor="middle">
+                PERFORMANCE DASHBOARD
+            </text>
+            <text x="500" y="95" font-family="Century Gothic, Arial, Helvetica, sans-serif" font-size="14" fill="#666666" text-anchor="middle">
+                Loan Officer Performance Analysis • Generated: 13 February 2026 at 12:53 (EAT)
+            </text>
+            
+            <!-- ========== OFFICER INFO CARD ========== -->
+            <rect x="30" y="140" width="940" height="100" fill="#FFFFFF" stroke="#E0E0E0" stroke-width="1" rx="8" ry="8" />
+            
+            <!-- Officer Avatar -->
+            <circle cx="80" cy="190" r="35" fill="#2C3E50" />
+            <text x="80" y="205" font-family="Century Gothic, Arial, Helvetica, sans-serif" font-size="32" font-weight="bold" fill="white" text-anchor="middle">S</text>
+            
+            <!-- Officer Name and Details -->
+            <text x="140" y="175" font-family="Century Gothic, Arial, Helvetica, sans-serif" font-size="20" font-weight="bold" fill="#2C3E50">
+                Sarah Wangechi
+            </text>
+            <text x="140" y="200" font-family="Century Gothic, Arial, Helvetica, sans-serif" font-size="12" fill="#666666">
+                Credit Cards Specialist • ID: EMPee18af
+            </text>
+            
+            <!-- Quick Stats -->
+            <rect x="600" y="150" width="350" height="80" fill="#F8F9FA" rx="5" ry="5" />
+            
+            <text x="620" y="180" font-family="Century Gothic, Arial, Helvetica, sans-serif" font-size="12" font-weight="bold" fill="#2C3E50">
+                Calls Today:
+            </text>
+            <text x="720" y="180" font-family="Century Gothic, Arial, Helvetica, sans-serif" font-size="12" fill="#3498DB" font-weight="bold">
+                8
+            </text>
+            
+            <text x="620" y="205" font-family="Century Gothic, Arial, Helvetica, sans-serif" font-size="12" font-weight="bold" fill="#2C3E50">
+                Avg Duration:
+            </text>
+            <text x="720" y="205" font-family="Century Gothic, Arial, Helvetica, sans-serif" font-size="12" fill="#2C3E50">
+                4:32
+            </text>
+            
+            <text x="820" y="180" font-family="Century Gothic, Arial, Helvetica, sans-serif" font-size="12" font-weight="bold" fill="#2C3E50">
+                Completed:
+            </text>
+            <text x="920" y="180" font-family="Century Gothic, Arial, Helvetica, sans-serif" font-size="12" fill="#27AE60" font-weight="bold">
+                3
+            </text>
+            
+            <text x="820" y="205" font-family="Century Gothic, Arial, Helvetica, sans-serif" font-size="12" font-weight="bold" fill="#2C3E50">
+                Pending:
+            </text>
+            <text x="920" y="205" font-family="Century Gothic, Arial, Helvetica, sans-serif" font-size="12" fill="#E74C3C" font-weight="bold">
+                KES 0
+            </text>
+            
+            <!-- ========== PERFORMANCE METRICS SECTION ========== -->
+            <text x="500" y="270" font-family="Century Gothic, Arial, Helvetica, sans-serif" font-size="18" font-weight="bold" fill="#2C3E50" text-anchor="middle">
+                PERFORMANCE METRICS
+            </text>
+            
+            <!-- Collection Rate Gauge -->
+            <rect x="80" y="300" width="250" height="90" fill="#FFFFFF" stroke="#E0E0E0" stroke-width="1" rx="8" ry="8" />
+            
+            <text x="205" y="330" font-family="Century Gothic, Arial, Helvetica, sans-serif" font-size="14" fill="#666666" text-anchor="middle">
+                Collection Rate
+            </text>
+            <text x="205" y="370" font-family="Century Gothic, Arial, Helvetica, sans-serif" font-size="36" font-weight="bold" fill="#27AE60" text-anchor="middle">
+                78.3%
+            </text>
+            
+            <!-- Progress bar -->
+            <rect x="100" y="380" width="200" height="8" fill="#ECF0F1" rx="4" ry="4" />
+            <rect x="100" y="380" width="156.6" height="8" fill="#27AE60" rx="4" ry="4" />
+            <text x="310" y="388" font-family="Century Gothic, Arial, Helvetica, sans-serif" font-size="10" fill="#666666">
+                Target: 85%
+            </text>
+            
+            <!-- Call Conversion Gauge -->
+            <rect x="370" y="300" width="250" height="90" fill="#FFFFFF" stroke="#E0E0E0" stroke-width="1" rx="8" ry="8" />
+            
+            <text x="495" y="330" font-family="Century Gothic, Arial, Helvetica, sans-serif" font-size="14" fill="#666666" text-anchor="middle">
+                Call Conversion
+            </text>
+            <text x="495" y="370" font-family="Century Gothic, Arial, Helvetica, sans-serif" font-size="36" font-weight="bold" fill="#3498DB" text-anchor="middle">
+                64.0%
+            </text>
+            
+            <!-- Progress bar -->
+            <rect x="395" y="380" width="200" height="8" fill="#ECF0F1" rx="4" ry="4" />
+            <rect x="395" y="380" width="128" height="8" fill="#3498DB" rx="4" ry="4" />
+            <text x="605" y="388" font-family="Century Gothic, Arial, Helvetica, sans-serif" font-size="10" fill="#666666">
+                Target: 70%
+            </text>
+            
+            <!-- Efficiency Score Gauge -->
+            <rect x="660" y="300" width="250" height="90" fill="#FFFFFF" stroke="#E0E0E0" stroke-width="1" rx="8" ry="8" />
+            
+            <text x="785" y="330" font-family="Century Gothic, Arial, Helvetica, sans-serif" font-size="14" fill="#666666" text-anchor="middle">
+                Efficiency Score
+            </text>
+            <text x="785" y="370" font-family="Century Gothic, Arial, Helvetica, sans-serif" font-size="36" font-weight="bold" fill="#F39C12" text-anchor="middle">
+                8.5/10
+            </text>
+            
+            <!-- Progress bar -->
+            <rect x="685" y="380" width="200" height="8" fill="#ECF0F1" rx="4" ry="4" />
+            <rect x="685" y="380" width="170" height="8" fill="#F39C12" rx="4" ry="4" />
+            <text x="895" y="388" font-family="Century Gothic, Arial, Helvetica, sans-serif" font-size="10" fill="#666666">
+                Target: 9/10
+            </text>
+            
+            <!-- ========== COLLECTIONS BAR CHART ========== -->
+            <text x="500" y="460" font-family="Century Gothic, Arial, Helvetica, sans-serif" font-size="18" font-weight="bold" fill="#2C3E50" text-anchor="middle">
+                COLLECTIONS SUMMARY
+            </text>
+            
+            <rect x="80" y="490" width="400" height="200" fill="#FFFFFF" stroke="#E0E0E0" stroke-width="1" rx="8" ry="8" />
+            
+            <!-- Today -->
+            <text x="100" y="530" font-family="Century Gothic, Arial, Helvetica, sans-serif" font-size="12" fill="#666666">Today</text>
+            <rect x="180" y="515" width="7.882534775888717" height="20" fill="#2C3E50" rx="3" ry="3" />
+            <text x="197.88253477588873" y="533" font-family="Century Gothic, Arial, Helvetica, sans-serif" font-size="11" fill="#2C3E50">KES 8,500</text>
+            
+            <!-- Weekly -->
+            <text x="100" y="570" font-family="Century Gothic, Arial, Helvetica, sans-serif" font-size="12" fill="#666666">Weekly</text>
+            <rect x="180" y="555" width="30.139103554868626" height="20" fill="#34495E" rx="3" ry="3" />
+            <text x="220.13910355486863" y="573" font-family="Century Gothic, Arial, Helvetica, sans-serif" font-size="11" fill="#34495E">KES 32,500</text>
+            
+            <!-- Monthly -->
+            <text x="100" y="610" font-family="Century Gothic, Arial, Helvetica, sans-serif" font-size="12" fill="#666666">Monthly</text>
+            <rect x="180" y="595" width="115.91962905718702" height="20" fill="#2C3E50" rx="3" ry="3" />
+            <text x="305.919629057187" y="613" font-family="Century Gothic, Arial, Helvetica, sans-serif" font-size="11" fill="#2C3E50">KES 125,000</text>
+            
+            <!-- Total -->
+            <text x="100" y="650" font-family="Century Gothic, Arial, Helvetica, sans-serif" font-size="12" fill="#666666">Total</text>
+            <rect x="180" y="635" width="300" height="20" fill="#1A252F" rx="3" ry="3" />
+            <text x="490" y="653" font-family="Century Gothic, Arial, Helvetica, sans-serif" font-size="11" fill="#1A252F">KES 323,500</text>
+            
+            <!-- Overdue Amount -->
+            <text x="100" y="690" font-family="Century Gothic, Arial, Helvetica, sans-serif" font-size="12" fill="#666666">Overdue</text>
+            <rect x="180" y="675" width="18.547140649149924" height="20" fill="#E74C3C" rx="3" ry="3" />
+            <text x="208.54714064914992" y="693" font-family="Century Gothic, Arial, Helvetica, sans-serif" font-size="11" fill="#E74C3C">KES 20,000</text>
+            
+            <!-- ========== CUSTOMER DISTRIBUTION ========== -->
+            <rect x="520" y="490" width="400" height="200" fill="#FFFFFF" stroke="#E0E0E0" stroke-width="1" rx="8" ry="8" />
+            
+            <text x="720" y="520" font-family="Century Gothic, Arial, Helvetica, sans-serif" font-size="16" font-weight="bold" fill="#2C3E50" text-anchor="middle">
+                CUSTOMER STATUS
+            </text>
+            
+            <!-- Pie Chart Representation -->
+            <circle cx="620" cy="600" r="60" fill="#27AE60" opacity="0.8" />
+            <circle cx="620" cy="600" r="45" fill="#E74C3C" opacity="0.8" />
+            <circle cx="620" cy="600" r="30" fill="#3498DB" opacity="0.8" />
+            <circle cx="620" cy="600" r="15" fill="#F39C12" opacity="0.8" />
+            
+            <!-- Legend -->
+            <rect x="700" y="560" width="12" height="12" fill="#27AE60" rx="2" ry="2" />
+            <text x="720" y="572" font-family="Century Gothic, Arial, Helvetica, sans-serif" font-size="11" fill="#333333">
+                Active: 1
+            </text>
+            
+            <rect x="700" y="585" width="12" height="12" fill="#E74C3C" rx="2" ry="2" />
+            <text x="720" y="597" font-family="Century Gothic, Arial, Helvetica, sans-serif" font-size="11" fill="#333333">
+                Overdue: 1
+            </text>
+            
+            <rect x="700" y="610" width="12" height="12" fill="#3498DB" rx="2" ry="2" />
+            <text x="720" y="622" font-family="Century Gothic, Arial, Helvetica, sans-serif" font-size="11" fill="#333333">
+                New: 0
+            </text>
+            
+            <rect x="700" y="635" width="12" height="12" fill="#F39C12" rx="2" ry="2" />
+            <text x="720" y="647" font-family="Century Gothic, Arial, Helvetica, sans-serif" font-size="11" fill="#333333">
+                Other: 0
+            </text>
+            
+            <!-- Total Customers Highlight -->
+            <rect x="700" y="660" width="120" height="25" fill="#2C3E50" rx="5" ry="5" />
+            <text x="760" y="679" font-family="Century Gothic, Arial, Helvetica, sans-serif" font-size="12" font-weight="bold" fill="white" text-anchor="middle">
+                TOTAL: 2
+            </text>
+            
+            <!-- ========== CALL PERFORMANCE ========== -->
+            <rect x="80" y="710" width="840" height="60" fill="#F8F9FA" stroke="#E0E0E0" stroke-width="1" rx="8" ry="8" />
+            
+            <text x="200" y="745" font-family="Century Gothic, Arial, Helvetica, sans-serif" font-size="12" font-weight="bold" fill="#2C3E50">
+                Daily Call Performance:
+            </text>
+            
+            <!-- Call progress bar -->
+            <rect x="320" y="735" width="200" height="10" fill="#ECF0F1" rx="5" ry="5" />
+            <rect x="320" y="735" width="106.66666666666667" height="10" fill="#F39C12" rx="5" ry="5" />
+            <text x="530" y="745" font-family="Century Gothic, Arial, Helvetica, sans-serif" font-size="12" fill="#333333">
+                8/15 calls (53%)
+            </text>
+            
+            <text x="650" y="745" font-family="Century Gothic, Arial, Helvetica, sans-serif" font-size="12" font-weight="bold" fill="#2C3E50">
+                Weekly Total:
+            </text>
+            <text x="750" y="745" font-family="Century Gothic, Arial, Helvetica, sans-serif" font-size="12" fill="#3498DB" font-weight="bold">
+                32 calls
+            </text>
+            
+            <!-- ========== FOOTER ========== -->
+            <line x1="30" y1="790" x2="970" y2="790" stroke="#E0E0E0" stroke-width="1" />
+            
+            <text x="500" y="780" font-family="Century Gothic, Arial, Helvetica, sans-serif" font-size="10" fill="#999999" text-anchor="middle">
+                Report generated by Collections Supervisor • Collections Supervisor • 13 February 2026 at 12:53
+            </text>
+            
+            <text x="500" y="795" font-family="Century Gothic, Arial, Helvetica, sans-serif" font-size="9" fill="#CCCCCC" text-anchor="middle">
+                Report ID: VIS-76396449 • Confidential
+            </text>
+            
+            <!-- ========== WATERMARK ========== -->
+            <text x="500" y="450" font-family="Century Gothic, Arial, Helvetica, sans-serif" font-size="60" font-weight="bold" fill="#F0F0F0" text-anchor="middle" transform="rotate(-30, 500, 450)">
+                CONFIDENTIAL
+            </text>
+        </svg>

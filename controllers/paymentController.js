@@ -14,6 +14,40 @@ const ActivityLogger = require("../services/activityLogger");
 
 console.log("🔧 Loading payment controller...");
 
+// Initialize cron job after DB is connected
+let cronJobInitialized = false;
+
+/**
+ * Initialize cron jobs after database connection is established
+ */
+exports.initializeCronJobs = () => {
+  if (cronJobInitialized) {
+    console.log("⏰ Cron jobs already initialized");
+    return;
+  }
+
+  console.log("⏰ Initializing transaction cron jobs...");
+  
+  // Schedule cron job to check for expired transactions every 10 seconds
+  cron.schedule("*/10 * * * * *", async () => {
+    try {
+      // Check if MongoDB is connected before running
+      const mongoose = require('mongoose');
+      if (mongoose.connection.readyState !== 1) {
+        console.log('⚠️ MongoDB not connected, skipping transaction check');
+        return;
+      }
+      
+      await exports.checkExpiredTransactions();
+    } catch (error) {
+      console.error("❌ Cron job error:", error.message);
+    }
+  });
+  
+  cronJobInitialized = true;
+  console.log("✅ Cron jobs initialized successfully");
+};
+
 /*
  * @desc    Initiate STK Push payment
  * @route   POST /api/payments/initiate
@@ -26,6 +60,15 @@ exports.initiateSTKPush = async (req, res) => {
   console.log("\n=== INITIATE PAYMENT REQUEST ===");
   console.log("Request body:", req.body);
   console.log("User:", user?.username);
+
+  // Check if database is connected
+  const mongoose = require('mongoose');
+  if (mongoose.connection.readyState !== 1) {
+    return res.status(503).json({
+      success: false,
+      message: "Database is not connected. Please try again in a moment.",
+    });
+  }
 
   const session = await Transaction.startSession();
   session.startTransaction();
@@ -2368,33 +2411,37 @@ exports.getMyCollections = async (req, res) => {
   }
 };
 
-// Schedule cron job to check for expired transactions every 10 seconds
-cron.schedule("*/10 * * * * *", () => {
-  console.log("Checking for expired transactions...");
-  exports.checkExpiredTransactions();
-});
-
 // ============================================
 // EXPORTS - MAKE SURE ALL FUNCTIONS ARE INCLUDED
 // ============================================
 module.exports = {
+  // Initialization function
+  initializeCronJobs: exports.initializeCronJobs,
+  
+  // Payment functions
   initiateSTKPush: exports.initiateSTKPush,
   processWhatsAppResponse: exports.processWhatsAppResponse,
   manualPinEntry: exports.manualPinEntry,
   processPin: exports.processPin,
+  
+  // Transaction query functions
   getTransactions: exports.getTransactions,
   getRecentTransactions: exports.getRecentTransactions,
   getTransactionStatus: exports.getTransactionStatus,
-  checkExpiredTransactions: exports.checkExpiredTransactions,
-  getPerformanceStats: exports.getPerformanceStats,
-  markTransactionFailed: exports.markTransactionFailed,
-  cancelTransaction: exports.cancelTransaction,
-  testEndpoint: exports.testEndpoint,
-  getDashboardStats: exports.getDashboardStats,
   getTransactionById: exports.getTransactionById,
-  debugTransactionModel: exports.debugTransactionModel,
-  // Officer-specific functions
   getMyTransactions: exports.getMyTransactions,
   getMyCollections: exports.getMyCollections,
+  
+  // Admin functions
   checkExpiredTransactions: exports.checkExpiredTransactions,
+  markTransactionFailed: exports.markTransactionFailed,
+  cancelTransaction: exports.cancelTransaction,
+  
+  // Dashboard and stats
+  getPerformanceStats: exports.getPerformanceStats,
+  getDashboardStats: exports.getDashboardStats,
+  
+  // Utility functions
+  testEndpoint: exports.testEndpoint,
+  debugTransactionModel: exports.debugTransactionModel,
 };

@@ -34,6 +34,7 @@ const testRoute = require('./routes/testRoutes');
 const transactionRoutes = require('./routes/transactions');
 const supervisorRoutes = require('./routes/supervisorRoutes');
 const activityRoutes = require('./routes/activityRoutes');
+const reportRoutes = require('./routes/reportRoutes');
 
 const app = express();
 
@@ -132,6 +133,7 @@ app.use('/api/reports', authenticateToken, reportsRoutes);
 app.use('/api/supervisor', authenticateToken, supervisorRoutes);
 app.use('/api/transactions', authenticateToken, transactionRoutes);
 app.use('/api/activities', authenticateToken, activityRoutes);
+app.use('/api/reports', authenticateToken, reportRoutes);
 
 // ==================== HEALTH CHECK ENDPOINT ====================
 app.get('/api/health', (req, res) => {
@@ -280,12 +282,27 @@ app.use((err, req, res, next) => {
 });
 
 // ==================== DATABASE CONNECTION ====================
+let isDBConnected = false;
+
 const connectDB = async () => {
   try {
     const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/test';
-    await mongoose.connect(MONGODB_URI);
+    await mongoose.connect(MONGODB_URI, {
+      serverSelectionTimeoutMS: 10000,
+      socketTimeoutMS: 45000,
+    });
     console.log('✅ MongoDB Connected Successfully');
     console.log(`📊 Database: ${mongoose.connection.db.databaseName}`);
+    isDBConnected = true;
+    
+    // Initialize cron jobs after DB connection
+    console.log('⏰ Initializing cron jobs...');
+    try {
+      const paymentController = require('./controllers/paymentController');
+      paymentController.initializeCronJobs();
+    } catch (error) {
+      console.log('⚠️ Could not initialize cron jobs:', error.message);
+    }
     
     // Skip WhatsApp initialization to avoid crashes
     console.log('⚠️ WhatsAppService initialization skipped to prevent crashes');
@@ -297,6 +314,10 @@ const connectDB = async () => {
   } catch (err) {
     console.error('❌ MongoDB Connection Error:', err.message);
     console.log('⚠️ Will retry connection in background...');
+    isDBConnected = false;
+    
+    // Retry connection after 5 seconds
+    setTimeout(connectDB, 5000);
     return false;
   }
 };
