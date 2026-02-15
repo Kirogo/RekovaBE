@@ -1,3 +1,4 @@
+//models/Loan.js
 const mongoose = require('mongoose');
 
 const LoanSchema = new mongoose.Schema({
